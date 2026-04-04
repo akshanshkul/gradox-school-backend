@@ -28,11 +28,17 @@ class School extends Model
         'about_text',
         'admission_form_config',
         'landing_theme_config',
+        'email_settings',
+        'plan_name',
+        'subscription_status',
+        'subscription_expires_at',
     ];
 
     protected $casts = [
         'admission_form_config' => 'array',
         'landing_theme_config' => 'array',
+        'email_settings' => 'array',
+        'subscription_expires_at' => 'datetime',
     ];
 
     public function landingBanners()

@@ -28,7 +28,9 @@ class StaffPasswordResetMail extends Mailable
      */
     public function envelope(): Envelope
     {
+        $schoolName = $this->user->school->name ?? config('app.name');
         return new Envelope(
+            from: new \Illuminate\Mail\Mailables\Address(config('mail.from.address'), $schoolName),
             subject: 'Staff Password Reset Mail',
         );
     }

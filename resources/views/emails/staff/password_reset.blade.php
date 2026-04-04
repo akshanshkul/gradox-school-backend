@@ -1,19 +1,24 @@
-<x-mail::message>
-# Password Reset Notification
+@extends('emails.layout')
 
-Hello {{ $user->name }},
+@section('content')
+    <h1>Password <span class="accent">Reset</span></h1>
+    <p>Hello <strong>{{ $user->name }}</strong>,</p>
+    <p>Your institutional account password has been reset by the administrator. Please use the temporary credentials below to log in to your dashboard.</p>
+    
+    <div class="credential-box">
+        <label class="credential-label">New Temporary Password</label>
+        <div class="credential-item">
+            <span class="credential-value">{{ $newPassword }}</span>
+        </div>
+    </div>
 
-Your institutional account password has been reset by the administrator. Please use the temporary credentials below to log in:
+    <p style="margin-top: 30px; text-align: center;">
+        <a href="{{ config('app.url') }}/login" class="button">Login to Dashboard</a>
+    </p>
 
-**New Password:** `{{ $newPassword }}`
+    <div class="divider"></div>
 
-<x-mail::button :url="config('app.url')">
-Login to Dashboard
-</x-mail::button>
-
-> [!IMPORTANT]
-> For security reasons, please change your password immediately after logging in.
-
-Regards,
-{{ config('app.name') }} Administration
-</x-mail::message>
+    <p style="font-size: 12px; color: #ef4444; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em;">
+        Critical: For security reasons, you must change this temporary password immediately after logging in.
+    </p>
+@endsection

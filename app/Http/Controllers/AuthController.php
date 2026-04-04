@@ -25,6 +25,9 @@ class AuthController extends Controller
             $school = School::create([
                 'name' => $request->school_name,
                 'email' => $request->school_email,
+                'plan_name' => 'Grow',
+                'subscription_status' => 'trialing',
+                'subscription_expires_at' => now()->addMonth(),
             ]);
 
             $user = User::create([
@@ -54,12 +57,29 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (! $user || ! Hash::check($request->password, $user->password)) {
+        if (!$user) {
             throw ValidationException::withMessages([
                 'email' => ['Invalid credentials.'],
             ]);
         }
 
+        if ($user->status === 'exit') {
+            throw ValidationException::withMessages([
+                'email' => ['You are no longer part of this institute.'],
+            ]);
+        }
+
+        if ($user->status !== 'active') {
+            throw ValidationException::withMessages([
+                'email' => ['Your account is inactive.'],
+            ]);
+        }
+
+        if (!Hash::check($request->password, $user->password)) {
+            throw ValidationException::withMessages([
+                'email' => ['Invalid credentials.'],
+            ]);
+        }
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([

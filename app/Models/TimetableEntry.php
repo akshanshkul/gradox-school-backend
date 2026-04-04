@@ -15,6 +15,7 @@ class TimetableEntry extends Model
         'subject_id',
         'user_id',
         'classroom_id',
+        'date',
         'day_of_week',
         'start_time',
         'end_time',

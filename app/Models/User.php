@@ -23,7 +23,12 @@ class User extends Authenticatable
         'password',
         'school_id',
         'role',
-        'profile_picture'
+        'is_teaching',
+        'staff_subtype',
+        'profile_picture',
+        'teacher_details',
+        'status',
+        'exit_date'
     ];
 
     public function school()
@@ -54,5 +59,9 @@ class User extends Authenticatable
     protected $casts = [
         'email_verified_at' => 'datetime',
         'password' => 'hashed',
+        'is_teaching' => 'boolean',
+        'teacher_details' => 'array',
+        'status' => 'string',
+        'exit_date' => 'date',
     ];
 }

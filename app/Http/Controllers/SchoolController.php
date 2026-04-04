@@ -23,8 +23,10 @@ class SchoolController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
-            'role' => 'required|in:admin,incharge,teacher',
+            'role' => 'required|in:admin,incharge,teacher,staff',
             'profile_picture' => 'nullable|image|max:2048',
+            'is_teaching' => 'required|string', // "true" or "false" from FormData
+            'staff_subtype' => 'nullable|string|max:255',
         ]);
 
         $profilePicturePath = null;
@@ -44,7 +46,14 @@ class SchoolController extends Controller
             'password' => Hash::make($request->password),
             'school_id' => $request->user()->school_id,
             'role' => $request->role,
+            'is_teaching' => $request->is_teaching === 'true',
+            'staff_subtype' => $request->staff_subtype,
             'profile_picture' => $profilePicturePath,
+            'teacher_details' => [
+                'education' => [],
+                'specializations' => [],
+                'personal_email' => null
+            ]
         ]);
 
         try {
@@ -58,7 +67,17 @@ class SchoolController extends Controller
 
     public function getTeachers(Request $request)
     {
-        return response()->json($request->user()->school->users);
+        return response()->json($request->user()->school->users()->where('status', 'active')->get());
+    }
+
+    public function getInactiveStaff(Request $request)
+    {
+        return response()->json($request->user()->school->users()->whereIn('status', ['inactive', 'exit'])->get());
+    }
+
+    public function exportTeachers(Request $request)
+    {
+        return response()->json($request->user()->school->users()->where('status', 'active')->get());
     }
 
     public function addGrade(Request $request)
@@ -89,7 +108,7 @@ class SchoolController extends Controller
             'class_teacher_id' => 'nullable|exists:users,id',
             'default_classroom_id' => 'nullable|exists:classrooms,id',
         ]);
-        
+
         $schoolClass = SchoolClass::create([
             'grade_id' => $request->grade_id,
             'section_id' => $request->section_id,
@@ -121,7 +140,29 @@ class SchoolController extends Controller
             'default_classroom_id' => $request->default_classroom_id,
         ]);
 
-        return response()->json($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom']));
+        return response()->json($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']));
+    }
+
+    public function syncSubjects(Request $request, $id)
+    {
+        $request->validate([
+            'subjects' => 'array',
+            'subjects.*.id' => 'required|exists:subjects,id',
+            'subjects.*.periods_per_week' => 'nullable|integer|min:1',
+        ]);
+
+        $schoolClass = SchoolClass::where('id', $id)
+            ->where('school_id', $request->user()->school_id)
+            ->firstOrFail();
+
+        $syncData = [];
+        foreach ($request->subjects as $item) {
+            $syncData[$item['id']] = ['periods_per_week' => $item['periods_per_week'] ?? 1];
+        }
+
+        $schoolClass->subjects()->sync($syncData);
+
+        return response()->json($schoolClass->load('subjects'));
     }
 
     public function addSubject(Request $request)
@@ -153,37 +194,94 @@ class SchoolController extends Controller
         return response()->json($classroom);
     }
 
-    public function deleteTeacher($id, Request $request) {
+    public function updateTeacherDetails($id, Request $request)
+    {
         $teacher = User::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
-        $teacher->delete();
+
+        $request->validate([
+            'role' => 'nullable|in:admin,incharge,teacher,staff',
+            'is_teaching' => 'nullable|boolean',
+            'staff_subtype' => 'nullable|string|max:255',
+            'education' => 'nullable|array',
+            'education.*.level' => 'required|string',
+            'education.*.degree' => 'required|string',
+            'education.*.institution' => 'required|string',
+            'education.*.year' => 'required|string',
+            'personal_email' => 'nullable|email',
+            'specializations' => 'nullable|array',
+            'specializations.*.subject_id' => 'required|integer',
+            'specializations.*.type' => 'required|string',
+            'specializations.*.specific_grades' => 'nullable|string',
+        ]);
+
+        if ($request->has('role'))
+            $teacher->role = $request->role;
+        if ($request->has('is_teaching'))
+            $teacher->is_teaching = $request->is_teaching;
+        if ($request->has('staff_subtype'))
+            $teacher->staff_subtype = $request->staff_subtype;
+
+        $details = $teacher->teacher_details ?? [];
+        if ($request->has('education'))
+            $details['education'] = $request->education;
+        if ($request->has('personal_email'))
+            $details['personal_email'] = $request->personal_email;
+        if ($request->has('specializations'))
+            $details['specializations'] = $request->specializations;
+
+        $teacher->teacher_details = $details;
+        $teacher->save();
+
+        return response()->json(['success' => true, 'teacher' => $teacher]);
+    }
+
+    public function deleteTeacher($id, Request $request)
+    {
+        $teacher = User::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
+        
+        $request->validate([
+            'status' => 'required|in:inactive,exit',
+            'exit_date' => 'required_if:status,exit|nullable|date',
+        ]);
+
+        $teacher->update([
+            'status' => $request->status,
+            'exit_date' => $request->status === 'exit' ? $request->exit_date : null,
+        ]);
+
         return response()->json(['success' => true]);
     }
 
-    public function deleteGrade($id, Request $request) {
+    public function deleteGrade($id, Request $request)
+    {
         $grade = Grade::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $grade->delete();
         return response()->json(['success' => true]);
     }
 
-    public function deleteSection($id, Request $request) {
+    public function deleteSection($id, Request $request)
+    {
         $section = Section::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $section->delete();
         return response()->json(['success' => true]);
     }
 
-    public function deleteClass($id, Request $request) {
+    public function deleteClass($id, Request $request)
+    {
         $class = SchoolClass::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $class->delete();
         return response()->json(['success' => true]);
     }
 
-    public function deleteSubject($id, Request $request) {
+    public function deleteSubject($id, Request $request)
+    {
         $subject = Subject::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $subject->delete();
         return response()->json(['success' => true]);
     }
 
-    public function deleteClassroom($id, Request $request) {
+    public function deleteClassroom($id, Request $request)
+    {
         $classroom = Classroom::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $classroom->delete();
         return response()->json(['success' => true]);
@@ -252,7 +350,7 @@ class SchoolController extends Controller
     public function resetStaffPassword(Request $request, $id)
     {
         $staff = User::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
-        
+
         $newPassword = \Illuminate\Support\Str::random(10);
         $staff->update([
             'password' => Hash::make($newPassword)
@@ -266,7 +364,7 @@ class SchoolController extends Controller
         }
 
         return response()->json([
-            'success' => true, 
+            'success' => true,
             'new_password' => $newPassword,
             'message' => 'Password reset successful and sent to staff email.'
         ]);
@@ -295,10 +393,10 @@ class SchoolController extends Controller
             'school' => $school,
             'grades' => $school->grades,
             'sections' => $school->sections,
-            'classes' => $school->classes()->with(['grade', 'section', 'classTeacher', 'defaultClassroom'])->get(),
+            'classes' => $school->classes()->with(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects'])->get(),
             'subjects' => $school->subjects,
             'classrooms' => $school->classrooms,
-            'teachers' => $school->users,
+            'teachers' => $school->users()->where('status', 'active')->get(),
             'events' => SchoolEvent::where('school_id', $school->id)->with('schoolClass')->get(),
             'role_configs' => RoleWorkloadConfig::where('school_id', $school->id)->get(),
             'periods' => SchoolPeriod::where('school_id', $school->id)->orderBy('sort_order')->orderBy('start_time')->get(),
@@ -316,8 +414,10 @@ class SchoolController extends Controller
             'tagline' => 'nullable|string',
             'about_text' => 'nullable|string',
             'school_logo' => 'nullable|image|max:2048',
+            'email_logo' => 'nullable|image|max:2048',
             'admission_form_config' => 'nullable|string',
             'landing_theme_config' => 'nullable|string',
+            'email_settings' => 'nullable|string',
         ]);
 
         $logoPath = $school->logo_path;
@@ -325,6 +425,15 @@ class SchoolController extends Controller
             $path = $request->file('school_logo')->store('school/logos', ['disk' => 's3']);
             if ($path) {
                 $logoPath = Storage::disk('s3')->url($path);
+            }
+        }
+
+        $emailSettings = $request->has('email_settings') ? json_decode($request->email_settings, true) : ($school->email_settings ?? []);
+
+        if ($request->hasFile('email_logo')) {
+            $path = $request->file('email_logo')->store('school/email_logos', ['disk' => 's3']);
+            if ($path) {
+                $emailSettings['logo_url'] = Storage::disk('s3')->url($path);
             }
         }
 
@@ -340,9 +449,87 @@ class SchoolController extends Controller
             'logo_path' => $logoPath,
             'admission_form_config' => $admissionConfig,
             'landing_theme_config' => $themeConfig,
+            'email_settings' => $emailSettings,
         ]);
 
         return response()->json($school);
+    }
+
+    public function getEmailPreview(Request $request)
+    {
+        $school = $request->user()->school;
+        
+        $brandColor = $request->query('brand_color', $school->email_settings['brand_color'] ?? '#6366f1');
+        $footerText = $request->query('footer_text', $school->email_settings['footer_text'] ?? '');
+        $logoUrl = $request->query('logo_url', $school->email_settings['logo_url'] ?? $school->logo_path);
+        
+        // New interactive branding tokens
+        $emailBg = $request->query('email_bg', $school->email_settings['bg_color'] ?? '#0f172a');
+        $contentBg = $request->query('content_bg', $school->email_settings['content_bg_color'] ?? '#1e293b');
+        $textColor = $request->query('email_text_color', $school->email_settings['text_color'] ?? '#f1f5f9');
+
+        // Flexibility: Allow previewing ANY event slug
+        $slug = $request->query('template_slug', 'admission_confirmation');
+        $previewContentHtml = $request->query('preview_content');
+        $previewSubject = $request->query('preview_subject');
+
+        // Fetch custom HTML from database template (or global default) if no override provided
+        $template = \App\Models\EmailTemplate::findBySlug($slug, $school->id);
+        
+        $contentHtml = $previewContentHtml ?? 'Thank you for your application.';
+        $subject = $previewSubject ?? 'Application Received';
+
+        if (!$previewContentHtml && $template) {
+            $mockData = [
+                'student_name' => 'John Doe',
+                'staff_name' => 'John Doe',
+                'user_name' => 'John Doe',
+                'admission_number' => 'ADM-' . date('Y') . '-0001',
+                'staff_role' => 'Principal',
+                'school_name' => $school->name ?? 'Our School',
+                'reset_url' => '#',
+            ];
+            $rendered = $template->render($mockData);
+            $contentHtml = $rendered['content_html'];
+            $subject = $rendered['subject'];
+        } elseif ($previewContentHtml) {
+            // Manual render for real-time editor typing
+            $mockData = [
+                '{{student_name}}' => 'John Doe',
+                '{{staff_name}}' => 'John Doe',
+                '{{user_name}}' => 'John Doe',
+                '{{admission_number}}' => 'ADM-' . date('Y') . '-0001',
+                '{{staff_role}}' => 'Principal',
+                '{{school_name}}' => $school->name ?? 'Our School',
+                '{{reset_url}}' => '#',
+            ];
+            $contentHtml = strtr($previewContentHtml, $mockData);
+        }
+
+        $mockApplication = new \App\Models\AdmissionApplication([
+            'first_name' => 'John',
+            'last_name' => 'Doe',
+            'email' => 'john.doe@example.com',
+            'phone' => '+1 (555) 000-0000',
+            'admission_number' => 'ADM-' . date('Y') . '-0001',
+        ]);
+        
+        // Temporarily override school branding for the mock
+        $mockApplication->school = clone $school;
+        $mockApplication->school->email_settings = [
+            'brand_color' => $brandColor,
+            'footer_text' => $footerText,
+            'logo_url' => $logoUrl,
+            'bg_color' => $emailBg,
+            'content_bg_color' => $contentBg,
+            'text_color' => $textColor,
+        ];
+
+        return view('emails.layout', [
+            'content' => $contentHtml,
+            'school' => $mockApplication->school,
+            'subject' => $subject
+        ]);
     }
 
     public function getPublicSchoolInfo(Request $request)
@@ -377,6 +564,7 @@ class SchoolController extends Controller
             'email' => $school->email,
             'admission_form_config' => $school->admission_form_config,
             'landing_theme_config' => $school->landing_theme_config,
+            'email_settings' => $school->email_settings,
             'banners' => $school->landingBanners,
             'sections' => $school->landingSections()->where('is_active', true)->with('cards')->get(),
             'classes' => $school->classes()->with(['grade', 'section'])->get(),
@@ -385,10 +573,10 @@ class SchoolController extends Controller
     public function getNotificationCounts(Request $request)
     {
         $schoolId = $request->user()->school_id;
-        
+
         $inquiryCount = \App\Models\Inquiry::where('school_id', $schoolId)->where('status', 'pending')->count();
         $admissionCount = \App\Models\AdmissionApplication::where('school_id', $schoolId)->where('status', 'pending')->count();
-        
+
         return response()->json([
             'inquiries' => $inquiryCount,
             'admissions' => $admissionCount,

@@ -15,6 +15,14 @@ class Attendance extends Model
         'date',
         'status',
         'remarks',
+        'is_regularized',
+        'regularize_remark',
+        'regularized_by',
+    ];
+
+    protected $casts = [
+        'is_regularized' => 'boolean',
+        'date' => 'date:Y-m-d',
     ];
 
     public function user()
@@ -25,5 +33,10 @@ class Attendance extends Model
     public function school()
     {
         return $this->belongsTo(School::class);
+    }
+
+    public function regularizedBy()
+    {
+        return $this->belongsTo(User::class, 'regularized_by');
     }
 }

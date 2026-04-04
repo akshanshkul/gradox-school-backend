@@ -2,39 +2,38 @@
 
 namespace App\Mail;
 
-use App\Models\User;
+use App\Models\AdmissionApplication;
 use App\Models\EmailTemplate;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
-class WelcomeTeamMember extends Mailable
+class AdmissionConfirmation extends Mailable
 {
     use Queueable, SerializesModels;
 
-    public $user;
-    public $passwordText;
+    public $application;
     public $templateData;
 
     /**
      * Create a new message instance.
      */
-    public function __construct(User $user, string $passwordText)
+    public function __construct(AdmissionApplication $application)
     {
-        $this->user = $user;
-        $this->passwordText = $passwordText;
+        $this->application = $application;
         
         // Fetch and pre-render template from database
-        $template = EmailTemplate::findBySlug('welcome_team_member', $user->school_id);
+        $application->load('schoolClass.grade', 'schoolClass.section');
+        $template = EmailTemplate::findBySlug('admission_confirmation', $application->school_id);
+        
         if ($template) {
             $this->templateData = $template->render([
-                'staff_name' => $user->name,
-                'staff_role' => $user->role,
-                'school_name' => $user->school->name ?? 'Our School',
-                'temporary_password' => $passwordText,
+                'student_name' => $application->student_name,
+                'class_name' => ($application->schoolClass->grade->name ?? '') . ' - ' . ($application->schoolClass->section->name ?? ''),
+                'admission_number' => $application->admission_number ?? 'Pending',
+                'school_name' => $application->school->name ?? 'Our School',
             ]);
         }
     }
@@ -44,10 +43,10 @@ class WelcomeTeamMember extends Mailable
      */
     public function envelope(): Envelope
     {
-        $schoolName = $this->user->school->name ?? config('app.name');
+        $schoolName = $this->application->school->name ?? config('app.name');
         return new Envelope(
             from: new \Illuminate\Mail\Mailables\Address(config('mail.from.address'), $schoolName),
-            subject: $this->templateData['subject'] ?? 'Welcome to the Team',
+            subject: $this->templateData['subject'] ?? 'Application Received',
         );
     }
 
@@ -59,8 +58,8 @@ class WelcomeTeamMember extends Mailable
         return new Content(
             view: 'emails.layout',
             with: [
-                'content' => $this->templateData['content_html'] ?? 'Welcome to our institution!',
-                'school' => $this->user->school
+                'content' => $this->templateData['content_html'] ?? 'Thank you for your application.',
+                'school' => $this->application->school
             ]
         );
     }

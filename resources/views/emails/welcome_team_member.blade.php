@@ -1,25 +1,28 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Welcome to the Team!</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-    <h2>Welcome, {{ $user->name }}!</h2>
-    <p>You have been added as a <strong>{{ ucfirst($user->role) }}</strong> for <strong>{{ $user->school->name ?? 'our school' }}</strong>.</p>
+@extends('emails.layout')
+
+@section('content')
+    <h1>Welcome, <span class="accent">{{ $user->name }}</span>!</h1>
+    <p>We are thrilled to have you as part of our institutional team. Your role has been confirmed as <strong>{{ ucfirst($user->role) }}</strong> for <strong>{{ $user->school->name ?? 'Gradox Academic Group' }}</strong>.</p>
     
-    <p>Here are your login credentials:</p>
-    <ul>
-        <li><strong>Email:</strong> {{ $user->email }}</li>
-        <li><strong>Password:</strong> {{ $passwordText }}</li>
-    </ul>
+    <div class="credential-box">
+        <label class="credential-label">Your Dashboard Credentials</label>
+        <div class="credential-item">
+            <span class="credential-label">Email</span><br/>
+            <span class="credential-value">{{ $user->email }}</span>
+        </div>
+        <div class="credential-item">
+            <span class="credential-label">Temporary Password</span><br/>
+            <span class="credential-value">{{ $passwordText }}</span>
+        </div>
+    </div>
 
-    <p style="margin-top: 20px;">
-        <a href="{{ config('app.url') }}/login" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Login to your Dashboard</a>
+    <p style="margin-top: 30px; font-size: 14px; text-align: center;">
+        <a href="{{ config('app.url') }}/login" class="button">Access Your Portal</a>
     </p>
 
-    <p style="margin-top: 30px; font-size: 12px; color: #777;">
-        Please change your password after your first login.<br>
-        If you did not expect this, please contact the administrator.
+    <div class="divider"></div>
+
+    <p style="font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+        Security Notice: Please update your password immediately after logging in for the first time.
     </p>
-</body>
-</html>
+@endsection

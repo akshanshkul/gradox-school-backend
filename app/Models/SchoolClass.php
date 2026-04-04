@@ -37,4 +37,14 @@ class SchoolClass extends Model
     {
         return $this->belongsTo(Classroom::class, 'default_classroom_id');
     }
+
+    public function timetableEntries()
+    {
+        return $this->hasMany(TimetableEntry::class);
+    }
+
+    public function subjects()
+    {
+        return $this->belongsToMany(Subject::class, 'class_subject')->withPivot('periods_per_week');
+    }
 }

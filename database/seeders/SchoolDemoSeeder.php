@@ -48,8 +48,14 @@ class SchoolDemoSeeder extends Seeder
 
         $teachers = [];
         $teacherNames = [
-            'Robert Miller', 'Emma Wilson', 'Michael Chen', 'Sophia Rodriguez',
-            'David Park', 'Olivia Brown', 'James Taylor', 'Isabella Lee'
+            'Robert Miller',
+            'Emma Wilson',
+            'Michael Chen',
+            'Sophia Rodriguez',
+            'David Park',
+            'Olivia Brown',
+            'James Taylor',
+            'Isabella Lee'
         ];
 
         foreach ($teacherNames as $name) {
