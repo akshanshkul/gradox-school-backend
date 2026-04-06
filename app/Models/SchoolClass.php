@@ -7,9 +7,11 @@ use Illuminate\Database\Eloquent\Model;
 use App\Models\Grade;
 use App\Models\Section;
 
+use App\Traits\ClearsSchoolCache;
+
 class SchoolClass extends Model
 {
-    use HasFactory;
+    use HasFactory, ClearsSchoolCache;
 
     protected $fillable = ['school_id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id'];
 

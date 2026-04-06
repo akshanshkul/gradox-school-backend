@@ -162,6 +162,10 @@ class SchoolController extends Controller
 
         $schoolClass->subjects()->sync($syncData);
 
+        // Manually invalidate school data and scheduling caches
+        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
+        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_timetable_scheduling_data");
+
         return response()->json($schoolClass->load('subjects'));
     }
 
@@ -389,18 +393,22 @@ class SchoolController extends Controller
     public function getData(Request $request)
     {
         $school = $request->user()->school;
-        return response()->json([
-            'school' => $school,
-            'grades' => $school->grades,
-            'sections' => $school->sections,
-            'classes' => $school->classes()->with(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects'])->get(),
-            'subjects' => $school->subjects,
-            'classrooms' => $school->classrooms,
-            'teachers' => $school->users()->where('status', 'active')->get(),
-            'events' => SchoolEvent::where('school_id', $school->id)->with('schoolClass')->get(),
-            'role_configs' => RoleWorkloadConfig::where('school_id', $school->id)->get(),
-            'periods' => SchoolPeriod::where('school_id', $school->id)->orderBy('sort_order')->orderBy('start_time')->get(),
-        ]);
+        $schoolId = $school->id;
+
+        return \App\Services\SafeCache::remember("school_{$schoolId}_dashboard_general_data", 1800, function () use ($school) {
+            return [
+                'school' => $school,
+                'grades' => $school->grades,
+                'sections' => $school->sections,
+                'classes' => $school->classes()->with(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects'])->get(),
+                'subjects' => $school->subjects,
+                'classrooms' => $school->classrooms,
+                'teachers' => $school->users()->where('status', 'active')->get(),
+                'events' => SchoolEvent::where('school_id', $school->id)->with('schoolClass')->get(),
+                'role_configs' => RoleWorkloadConfig::where('school_id', $school->id)->get(),
+                'periods' => SchoolPeriod::where('school_id', $school->id)->orderBy('sort_order')->orderBy('start_time')->get(),
+            ];
+        });
     }
 
     public function updateSettings(Request $request)
@@ -451,6 +459,10 @@ class SchoolController extends Controller
             'landing_theme_config' => $themeConfig,
             'email_settings' => $emailSettings,
         ]);
+
+        // Manually invalidate school data and scheduling caches
+        \App\Services\SafeCache::forget("school_{$school->id}_dashboard_general_data");
+        \App\Services\SafeCache::forget("school_{$school->id}_timetable_scheduling_data");
 
         return response()->json($school);
     }
@@ -598,6 +610,10 @@ class SchoolController extends Controller
             ->firstOrFail();
 
         $period->update($request->only(['name', 'start_time', 'end_time', 'type']));
+
+        // Manually invalidate school data and scheduling caches
+        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
+        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_timetable_scheduling_data");
 
         return response()->json($period);
     }

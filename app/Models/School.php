@@ -10,9 +10,11 @@ use App\Models\SchoolClass;
 use App\Models\Subject;
 use App\Models\Classroom;
 
+use App\Traits\ClearsSchoolCache;
+
 class School extends Model
 {
-    use HasFactory;
+    use HasFactory, ClearsSchoolCache;
 
     protected $fillable = [
         'name', 

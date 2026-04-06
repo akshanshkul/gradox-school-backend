@@ -94,6 +94,9 @@ Route::get('/school/notifications/counts', [SchoolController::class, 'getNotific
         // Email Templates Studio
         Route::get('/school/templates', [\App\Http\Controllers\EmailTemplateController::class, 'index']);
         Route::patch('/school/templates/{slug}', [\App\Http\Controllers\EmailTemplateController::class, 'update']);
+        
+        // Timetable Scheduling Data API
+        Route::get('/school/timetable-scheduling-data', [\App\Http\Controllers\TimetableSchedulingController::class, 'getTimetableSchedulingData']);
     });
 
     Route::get('/school/admissions', [\App\Http\Controllers\AdmissionController::class, 'index']);
