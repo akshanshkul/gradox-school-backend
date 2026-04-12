@@ -27,7 +27,7 @@ class SubstitutionController extends Controller
             ])
             ->get();
 
-        return response()->json($substitutions);
+        return $this->successResponse($substitutions, 'Substitutions retrieved successfully');
     }
 
     /**
@@ -59,10 +59,10 @@ class SubstitutionController extends Controller
             ->get()
             ->keyBy('timetable_entry_id');
 
-        return response()->json([
+        return $this->successResponse([
             'periods'   => $periods,
             'existing'  => $existing
-        ]);
+        ], 'Faculty availability results retrieved');
     }
 
     /**
@@ -99,11 +99,7 @@ class SubstitutionController extends Controller
             );
         }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Substitutions saved successfully.',
-            'data'    => $results
-        ]);
+        return $this->successResponse($results, 'Substitutions saved successfully.');
     }
 
     /**
@@ -116,6 +112,6 @@ class SubstitutionController extends Controller
         
         $sub->delete();
 
-        return response()->json(['success' => true]);
+        return $this->successResponse(null, 'Substitution removed successfully');
     }
 }

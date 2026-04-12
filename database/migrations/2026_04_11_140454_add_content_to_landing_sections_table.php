@@ -11,11 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
-        if (!Schema::hasColumn('admission_applications', 'admission_number')) {
-            Schema::table('admission_applications', function (Blueprint $table) {
-                $table->string('admission_number')->nullable()->after('photo_path');
-            });
-        }
+        Schema::table('landing_sections', function (Blueprint $table) {
+            $table->longText('content')->nullable();
+            $table->boolean('is_visible')->default(true);
+        });
     }
 
     /**
@@ -23,8 +22,8 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('admission_applications', function (Blueprint $table) {
-            //
+        Schema::table('landing_sections', function (Blueprint $table) {
+            $table->dropColumn(['content', 'is_visible']);
         });
     }
 };

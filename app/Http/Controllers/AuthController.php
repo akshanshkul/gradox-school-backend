@@ -30,21 +30,30 @@ class AuthController extends Controller
                 'subscription_expires_at' => now()->addMonth(),
             ]);
 
+            $adminRole = Role::firstOrCreate(
+                ['school_id' => $school->id, 'slug' => 'administrator'],
+                [
+                    'name' => 'Administrator',
+                    'description' => 'Global administrative access.',
+                    'permissions' => $this->getFullDefaultPermissions()
+                ]
+            );
+
             $user = User::create([
                 'name' => $request->name,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
                 'school_id' => $school->id,
-                'role' => 'admin',
+                'role_id' => $adminRole->id,
             ]);
 
             $token = $user->createToken('auth_token')->plainTextToken;
 
-            return response()->json([
-                'user' => $user->load('school'),
+            return $this->successResponse([
+                'user' => $user->load('school', 'role_relation', 'managedClasses'),
                 'access_token' => $token,
                 'token_type' => 'Bearer',
-            ]);
+            ], 'Welcome! Your institute has been registered.');
         });
     }
 
@@ -82,16 +91,30 @@ class AuthController extends Controller
         }
         $token = $user->createToken('auth_token')->plainTextToken;
 
-        return response()->json([
-            'user' => $user->load('school'),
+        return $this->successResponse([
+            'user' => $user->load('school', 'role_relation', 'managedClasses'),
             'access_token' => $token,
             'token_type' => 'Bearer',
-        ]);
+        ], 'Login successful');
     }
 
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()->delete();
-        return response()->json(['message' => 'Logged out successfully']);
+        return $this->successResponse(null, 'Logged out successfully');
+    }
+
+    private function getFullDefaultPermissions()
+    {
+        $resources = ['academic', 'students', 'timetable', 'staff', 'system', 'blogs', 'courses', 'reports'];
+        $actions = ['read', 'create', 'update', 'delete', 'export', 'import', 'publish', 'approve', 'archive', 'reject', 'restore'];
+        
+        $perms = [];
+        foreach ($resources as $res) {
+            foreach ($actions as $act) {
+                $perms[$res][$act] = true;
+            }
+        }
+        return $perms;
     }
 }

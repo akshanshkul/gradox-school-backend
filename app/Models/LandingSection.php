@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 class LandingSection extends Model
 {
     use HasFactory;
-    protected $fillable = ['school_id', 'title', 'type', 'is_active', 'sort_order'];
+    protected $fillable = ['school_id', 'title', 'type', 'is_active', 'sort_order', 'content', 'is_visible'];
 
     public function school()
     {

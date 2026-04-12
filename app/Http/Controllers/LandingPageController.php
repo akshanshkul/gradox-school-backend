@@ -52,17 +52,50 @@ class LandingPageController extends Controller
     {
         $request->validate([
             'title' => 'required|string',
-            'type' => 'required|in:grid,text',
+            'type' => 'required|in:grid,text,gallery,html,form',
+            'content' => 'nullable|string',
         ]);
 
         $section = LandingSection::create([
             'school_id' => $request->user()->school_id,
             'title' => $request->title,
             'type' => $request->type,
+            'content' => $request->content,
             'sort_order' => LandingSection::where('school_id', $request->user()->school_id)->count(),
         ]);
 
         return response()->json($section);
+    }
+
+    public function updateSection(Request $request, $id)
+    {
+        $section = LandingSection::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
+        
+        $request->validate([
+            'title' => 'nullable|string',
+            'content' => 'nullable|string',
+            'is_visible' => 'nullable|boolean',
+        ]);
+
+        $section->update($request->only(['title', 'content', 'is_visible']));
+        return response()->json($section);
+    }
+
+    public function reorderSections(Request $request)
+    {
+        $request->validate([
+            'orders' => 'required|array',
+            'orders.*.id' => 'required|integer',
+            'orders.*.sort_order' => 'required|integer',
+        ]);
+
+        foreach ($request->orders as $order) {
+            LandingSection::where('id', $order['id'])
+                ->where('school_id', $request->user()->school_id)
+                ->update(['sort_order' => $order['sort_order']]);
+        }
+
+        return response()->json(['success' => true]);
     }
 
     public function deleteSection(Request $request, $id)

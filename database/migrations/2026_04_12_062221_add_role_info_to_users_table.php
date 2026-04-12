@@ -11,11 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
-        if (!Schema::hasColumn('admission_applications', 'admission_number')) {
-            Schema::table('admission_applications', function (Blueprint $table) {
-                $table->string('admission_number')->nullable()->after('photo_path');
-            });
-        }
+        Schema::table('users', function (Blueprint $table) {
+            $table->foreignId('role_id')->nullable()->constrained('roles')->onDelete('set null');
+            $table->json('permission_overrides')->nullable();
+        });
     }
 
     /**
@@ -23,7 +22,7 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('admission_applications', function (Blueprint $table) {
+        Schema::table('users', function (Blueprint $table) {
             //
         });
     }

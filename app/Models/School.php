@@ -34,13 +34,17 @@ class School extends Model
         'plan_name',
         'subscription_status',
         'subscription_expires_at',
+        'grace_days',
+        'current_session',
     ];
 
     protected $casts = [
         'admission_form_config' => 'array',
         'landing_theme_config' => 'array',
         'email_settings' => 'array',
+        'working_days' => 'array',
         'subscription_expires_at' => 'datetime',
+        'grace_days' => 'integer',
     ];
 
     public function landingBanners()

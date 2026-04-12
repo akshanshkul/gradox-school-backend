@@ -17,7 +17,7 @@ class TimetableController extends Controller
         if (!$request->classroom_id) {
             $classroomId = $this->findAvailableRoom($request, $school_id);
             if (!$classroomId) {
-                return response()->json(['error' => 'No available classrooms found for this period.'], 422);
+                return $this->errorResponse('No available classrooms found for this period.', 422);
             }
             $request->merge(['classroom_id' => $classroomId]);
         }
@@ -29,7 +29,7 @@ class TimetableController extends Controller
         // Verify teaching status
         $teacher = \App\Models\User::find($request->user_id);
         if ($teacher && !$teacher->is_teaching) {
-            return response()->json(['error' => 'Selected staff member is not part of the teaching faculty.'], 422);
+            return $this->errorResponse('Selected staff member is not part of the teaching faculty.', 422);
         }
 
         $entry = TimetableEntry::create(array_merge($request->all(), ['school_id' => $school_id]));
@@ -47,7 +47,7 @@ class TimetableController extends Controller
         if (!$request->classroom_id) {
             $classroomId = $this->findAvailableRoom($request, $school_id, $id);
             if (!$classroomId) {
-                return response()->json(['error' => 'No available classrooms found for this period.'], 422);
+                return $this->errorResponse('No available classrooms found for this period.', 422);
             }
             $request->merge(['classroom_id' => $classroomId]);
         }
@@ -59,7 +59,7 @@ class TimetableController extends Controller
         // Verify teaching status
         $teacher = \App\Models\User::find($request->user_id);
         if ($teacher && !$teacher->is_teaching) {
-            return response()->json(['error' => 'Selected staff member is not part of the teaching faculty.'], 422);
+            return $this->errorResponse('Selected staff member is not part of the teaching faculty.', 422);
         }
 
         $entry->update($request->all());
@@ -71,7 +71,7 @@ class TimetableController extends Controller
     {
         $entry = TimetableEntry::where('school_id', $request->user()->school_id)->findOrFail($id);
         $entry->delete();
-        return response()->json(['message' => 'Entry deleted successfully']);
+        return $this->successResponse(null, 'Entry deleted successfully');
     }
 
     private function validateEntry(Request $request)
@@ -162,21 +162,20 @@ class TimetableController extends Controller
                     $request->merge(['classroom_id' => $entry->classroom_id]);
                     continue; 
                 }
-                return response()->json([
-                    'error' => "Teacher is already busy in Room {$entry->classroom->name}.",
+                return $this->errorResponse("Teacher is already busy in " . ($entry->classroom?->name ?? 'an unassigned room') . ".", 422, [
                     'merge_possible' => true,
                     'existing_classroom_id' => $entry->classroom_id,
-                    'existing_classroom_name' => $entry->classroom->name,
-                    'existing_class_name' => "{$entry->schoolClass->grade->name}-{$entry->schoolClass->section->name}"
-                ], 422);
+                    'existing_classroom_name' => $entry->classroom?->name ?? 'Unassigned Room',
+                    'existing_class_name' => ($entry->schoolClass?->grade?->name ?? '?') . "-" . ($entry->schoolClass?->section?->name ?? '?')
+                ]);
             }
 
             if ($entry->classroom_id == $request->classroom_id && $entry->user_id != $request->user_id) {
-                return response()->json(['error' => "Classroom is already occupied by another teacher ({$entry->teacher->name})."], 422);
+                return $this->errorResponse("Classroom is already occupied by another teacher (" . ($entry->teacher?->name ?? 'Unknown') . ").", 422);
             }
 
             if ($entry->school_class_id == $request->school_class_id) {
-                return response()->json(['error' => 'This class already has a lesson at this time.'], 422);
+                return $this->errorResponse('This class already has a lesson at this time.', 422);
             }
         }
 
@@ -228,7 +227,7 @@ class TimetableController extends Controller
             $entry->attendance_status = $attendances->get($attKey)?->first()?->status;
         }
 
-        return response()->json($entries);
+        return $this->successResponse($entries, 'Timetable entries retrieved successfully');
     }
 
     /**
@@ -272,10 +271,8 @@ class TimetableController extends Controller
             }
         }
 
-        return response()->json([
-            'success' => true, 
+        return $this->successResponse([
             'count' => count($newEntries),
-            'message' => "Successfully cloned " . count($newEntries) . " periods to the target week."
-        ]);
+        ], "Successfully cloned " . count($newEntries) . " periods to the target week.");
     }
 }

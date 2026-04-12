@@ -13,7 +13,7 @@ class SchoolClass extends Model
 {
     use HasFactory, ClearsSchoolCache;
 
-    protected $fillable = ['school_id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id'];
+    protected $fillable = ['school_id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id', 'periods_per_day'];
 
     public function school()
     {

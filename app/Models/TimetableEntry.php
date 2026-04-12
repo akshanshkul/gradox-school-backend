@@ -24,6 +24,15 @@ class TimetableEntry extends Model
         'is_active',
     ];
 
+    protected $casts = [
+        'school_id' => 'integer',
+        'school_class_id' => 'integer',
+        'subject_id' => 'integer',
+        'user_id' => 'integer',
+        'classroom_id' => 'integer',
+        'is_active' => 'boolean',
+    ];
+
     public function school()
     {
         return $this->belongsTo(School::class);

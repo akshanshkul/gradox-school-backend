@@ -19,17 +19,19 @@ class CheckSubscription
         if ($user && $user->school) {
             $school = $user->school;
             
-            // Check if trial is expired
-            if ($school->subscription_expires_at && $school->subscription_expires_at->isPast()) {
-                // Block all destructive/config operations, allow only critical GETs and logout
-                if ($request->isMethod('POST') || $request->isMethod('PATCH') || $request->isMethod('DELETE') || $request->isMethod('PUT')) {
-                    return response()->json([
-                        'error' => 'SUBSCRIPTION_EXPIRED',
-                        'message' => 'Institutional trial has expired. Please upgrade your plan to restore full administrative access.',
-                        'plan_name' => $school->plan_name,
-                        'expired_at' => $school->subscription_expires_at->toDateTimeString()
-                    ], 403);
-                }
+            // Priority: School-specific grace days -> Environment default -> 0
+            $graceDays = $school->grace_days > 0 ? (int) $school->grace_days : (int) env('SUBSCRIPTION_GRACE_DAYS', 0);
+            $expiryDate = $school->subscription_expires_at;
+
+            // Block all operations ONLY if expired AND past the grace period
+            // We use copy() to avoid mutating the original model attribute
+            if ($expiryDate && $expiryDate->copy()->addDays($graceDays)->isPast()) {
+                return response()->json([
+                    'error' => 'SUBSCRIPTION_EXPIRED',
+                    'message' => 'Institutional trial has expired. Please upgrade your plan to restore full administrative access.',
+                    'plan_name' => $school->plan_name,
+                    'expired_at' => $school->subscription_expires_at->toDateTimeString()
+                ], 403);
             }
         }
         

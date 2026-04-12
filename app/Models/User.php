@@ -24,13 +24,14 @@ class User extends Authenticatable
         'email',
         'password',
         'school_id',
-        'role',
+        'role_id',
         'is_teaching',
         'staff_subtype',
         'profile_picture',
         'teacher_details',
         'status',
-        'exit_date'
+        'exit_date',
+        'permission_overrides'
     ];
 
     public function school()
@@ -63,7 +64,65 @@ class User extends Authenticatable
         'password' => 'hashed',
         'is_teaching' => 'boolean',
         'teacher_details' => 'array',
+        'permission_overrides' => 'array',
         'status' => 'string',
         'exit_date' => 'date',
     ];
+
+    public const SLUG_SUPER_ADMIN = 'super-admin';
+    public const SLUG_ADMIN = 'administrator';
+    public const SLUG_TEACHER = 'teacher';
+
+    public function role_relation()
+    {
+        return $this->belongsTo(Role::class, 'role_id');
+    }
+
+    public function isSuperAdmin()
+    {
+        return $this->role_id && $this->role_relation && $this->role_relation->slug === self::SLUG_SUPER_ADMIN;
+    }
+
+    public function isAdmin()
+    {
+        if ($this->role_id && $this->role_relation) {
+            return in_array($this->role_relation->slug, [self::SLUG_SUPER_ADMIN, self::SLUG_ADMIN, 'admin']);
+        }
+        return false;
+    }
+
+    /**
+     * Check granular permission
+     * @param string $resource (e.g. 'blogs', 'users', 'students')
+     * @param string $action (e.g. 'read', 'create', 'delete', 'export')
+     */
+    public function canAccess($resource, $action)
+    {
+        if ($this->isSuperAdmin()) return true;
+
+        // 1. Check direct overrides (highest priority)
+        if (isset($this->permission_overrides[$resource][$action])) {
+            return (bool)$this->permission_overrides[$resource][$action];
+        }
+
+        // 2. Check role-based permissions
+        if ($this->role_id && $this->role_relation) {
+            $rolePerms = $this->role_relation->permissions;
+            if (isset($rolePerms[$resource][$action])) {
+                return (bool)$rolePerms[$resource][$action];
+            }
+        }
+
+        return false;
+    }
+
+    public function hasPermission($permission)
+    {
+        if ($this->isSuperAdmin()) return true;
+        return $this->canAccess(explode('.', $permission)[0], explode('.', $permission)[1] ?? 'read');
+    }
+    public function managedClasses()
+    {
+        return $this->hasMany(SchoolClass::class, 'class_teacher_id');
+    }
 }

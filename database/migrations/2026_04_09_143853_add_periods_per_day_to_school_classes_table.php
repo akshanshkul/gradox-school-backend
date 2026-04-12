@@ -11,11 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        if (!Schema::hasColumn('admission_applications', 'admission_number')) {
-            Schema::table('admission_applications', function (Blueprint $table) {
-                $table->string('admission_number')->nullable()->after('photo_path');
-            });
-        }
+        Schema::table('school_classes', function (Blueprint $table) {
+            $table->integer('periods_per_day')->nullable()->after('default_classroom_id');
+        });
     }
 
     /**
@@ -23,8 +21,8 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('admission_applications', function (Blueprint $table) {
-            //
+        Schema::table('school_classes', function (Blueprint $table) {
+            $table->dropColumn('periods_per_day');
         });
     }
 };
