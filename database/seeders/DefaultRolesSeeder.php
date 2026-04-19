@@ -35,19 +35,17 @@ class DefaultRolesSeeder extends Seeder
                     'description' => 'Standard teaching faculty access (restricted administrative view).',
                     'permissions' => [
                         'profile' => ['read' => true, 'update' => true],
+                        'attendance' => ['read' => true, 'create' => true],
                     ]
                 ]
             );
 
-            // Assign role_id to existing users based on their string 'role'
-            User::where('school_id', $school->id)->where('role', 'admin')->update(['role_id' => $adminRole->id]);
-            User::where('school_id', $school->id)->where('role', 'teacher')->update(['role_id' => $teacherRole->id]);
         }
     }
 
     private function getFullPermissions()
     {
-        $resources = ['academic', 'students', 'timetable', 'staff', 'system', 'blogs', 'courses', 'reports'];
+        $resources = ['academic', 'students', 'timetable', 'staff', 'system', 'blogs', 'courses', 'reports', 'attendance'];
         $actions = ['read', 'create', 'update', 'delete', 'export', 'import', 'publish', 'approve', 'archive', 'reject', 'restore'];
         
         $perms = [];

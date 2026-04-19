@@ -24,7 +24,8 @@ class TimetableController extends Controller
 
         // Conflict check
         $conflict = $this->checkConflicts($request, $school_id);
-        if ($conflict) return $conflict;
+        if ($conflict)
+            return $conflict;
 
         // Verify teaching status
         $teacher = \App\Models\User::find($request->user_id);
@@ -40,9 +41,9 @@ class TimetableController extends Controller
     public function updateEntry(Request $request, $id)
     {
         $entry = TimetableEntry::where('school_id', $request->user()->school_id)->findOrFail($id);
-        
+
         $school_id = $request->user()->school_id;
-        
+
         // Auto-assign classroom if not provided
         if (!$request->classroom_id) {
             $classroomId = $this->findAvailableRoom($request, $school_id, $id);
@@ -54,7 +55,8 @@ class TimetableController extends Controller
 
         // Conflict check (excluding current entry)
         $conflict = $this->checkConflicts($request, $school_id, $id);
-        if ($conflict) return $conflict;
+        if ($conflict)
+            return $conflict;
 
         // Verify teaching status
         $teacher = \App\Models\User::find($request->user_id);
@@ -91,7 +93,7 @@ class TimetableController extends Controller
     private function findAvailableRoom(Request $request, $school_id, $excludeId = null)
     {
         $classModel = \App\Models\SchoolClass::find($request->school_class_id);
-        
+
         // 1. Try Default Classroom
         if ($classModel && $classModel->default_classroom_id) {
             if ($this->isRoomFree($classModel->default_classroom_id, $request, $excludeId)) {
@@ -131,7 +133,7 @@ class TimetableController extends Controller
             ->where('date', $request->date)
             ->where(function ($q) use ($request) {
                 $q->whereBetween('start_time', [$request->start_time, $request->end_time])
-                  ->orWhereBetween('end_time', [$request->start_time, $request->end_time]);
+                    ->orWhereBetween('end_time', [$request->start_time, $request->end_time]);
             });
 
         if ($excludeId) {
@@ -160,7 +162,7 @@ class TimetableController extends Controller
             if ($entry->user_id == $request->user_id && $entry->classroom_id != $request->classroom_id) {
                 if ($request->merge_confirmed) {
                     $request->merge(['classroom_id' => $entry->classroom_id]);
-                    continue; 
+                    continue;
                 }
                 return $this->errorResponse("Teacher is already busy in " . ($entry->classroom?->name ?? 'an unassigned room') . ".", 422, [
                     'merge_possible' => true,
@@ -189,45 +191,102 @@ class TimetableController extends Controller
             'end_date'   => 'required|date|after_or_equal:start_date',
         ]);
 
-        $query = TimetableEntry::where('school_id', $request->user()->school_id)
+        $startDate = \Carbon\Carbon::parse($request->start_date);
+        $endDate = \Carbon\Carbon::parse($request->end_date);
+        $schoolId = $request->user()->school_id;
+
+        // 1. Fetch entries that have a specific date in this range
+        $dateSpecificQuery = TimetableEntry::where('school_id', $schoolId)
             ->whereBetween('date', [$request->start_date, $request->end_date])
             ->with(['schoolClass.grade', 'schoolClass.section', 'subject', 'teacher:id,name', 'classroom']);
 
         if ($request->has('school_class_id')) {
-            $query->where('school_class_id', $request->school_class_id);
+            $dateSpecificQuery->where('school_class_id', $request->school_class_id);
         }
 
         if ($request->has('user_id')) {
-            $query->where('user_id', $request->user_id);
+            $dateSpecificQuery->where('user_id', $request->user_id);
         }
 
-        $entries = $query->orderBy('date')->orderBy('start_time')->get();
+        $dateSpecificEntries = $dateSpecificQuery->get();
 
-        $entryIds = $entries->pluck('id');
-        $teacherIds = $entries->pluck('user_id')->unique();
+        // 2. Fetch recurring entries (date is null, day_of_week is set)
+        $recurringQuery = TimetableEntry::where('school_id', $schoolId)
+            ->whereNull('date')
+            ->whereNotNull('day_of_week')
+            ->with(['schoolClass.grade', 'schoolClass.section', 'subject', 'teacher:id,name', 'classroom']);
+
+        if ($request->has('school_class_id')) {
+            $recurringQuery->where('school_class_id', $request->school_class_id);
+        }
+
+        if ($request->has('user_id')) {
+            $recurringQuery->where('user_id', $request->user_id);
+        }
+
+        $recurringEntries = $recurringQuery->get();
+
+        // 3. Map recurring entries to actual dates in the requested range
+        $allEntries = collect($dateSpecificEntries);
+        
+        $currentDate = $startDate->copy();
+        while ($currentDate <= $endDate) {
+            $dayName = $currentDate->format('l'); // e.g. "Friday"
+            $dateStr = $currentDate->toDateString();
+
+            foreach ($recurringEntries as $recurring) {
+                if (strtolower($recurring->day_of_week) === strtolower($dayName)) {
+                    // Check if a date-specific entry already exists for this slot (Override)
+                    $exists = $dateSpecificEntries->contains(function ($item) use ($dateStr, $recurring) {
+                        return $item->date == $dateStr && 
+                               $item->start_time == $recurring->start_time && 
+                               $item->school_class_id == $recurring->school_class_id;
+                    });
+
+                    if (!$exists) {
+                        $virtualEntry = $recurring->replicate();
+                        $virtualEntry->id = $recurring->id; // Keep original ID for reference
+                        $virtualEntry->date = $dateStr;
+                        $virtualEntry->setRelation('schoolClass', $recurring->schoolClass);
+                        $virtualEntry->setRelation('subject', $recurring->subject);
+                        $virtualEntry->setRelation('teacher', $recurring->teacher);
+                        $virtualEntry->setRelation('classroom', $recurring->classroom);
+                        $allEntries->push($virtualEntry);
+                    }
+                }
+            }
+            $currentDate->addDay();
+        }
+
+        $allEntries = $allEntries->sortBy(['date', 'start_time'])->values();
+
+        $entryIds = $allEntries->pluck('id');
+        $teacherIds = $allEntries->pluck('user_id')->unique();
         
         $subs = \App\Models\PeriodSubstitution::whereIn('timetable_entry_id', $entryIds)
             ->whereBetween('date', [$request->start_date, $request->end_date])
             ->with(['substituteTeacher:id,name', 'substituteSubject:id,name'])
             ->get()
-            ->groupBy('timetable_entry_id');
+            ->groupBy(function($s) { return $s->timetable_entry_id . '_' . $s->getRawOriginal('date'); });
 
-        $attendances = \App\Models\Attendance::where('school_id', $request->user()->school_id)
+        $attendances = \App\Models\Attendance::where('school_id', $schoolId)
             ->whereIn('user_id', $teacherIds)
             ->whereBetween('date', [$request->start_date, $request->end_date])
             ->get(['user_id', 'date', 'status'])
             ->groupBy(function($a) { return $a->user_id . '_' . $a->getRawOriginal('date'); });
 
-        foreach ($entries as $entry) {
-            $entry->substitution = $subs->get($entry->id)?->first();
+        foreach ($allEntries as $entry) {
+            // Substitution lookup: needs ID + Date because multiple dates share same recurring ID
+            $dateStr = $entry instanceof TimetableEntry ? $entry->getRawOriginal('date') : $entry->date;
+            $subKey = $entry->id . '_' . $dateStr;
+            $entry->substitution = $subs->get($subKey)?->first();
             
             // Cross-reference attendance
-            $dateStr = $entry->getRawOriginal('date');
             $attKey = $entry->user_id . '_' . $dateStr;
             $entry->attendance_status = $attendances->get($attKey)?->first()?->status;
         }
 
-        return $this->successResponse($entries, 'Timetable entries retrieved successfully');
+        return $this->successResponse($allEntries, 'Timetable entries retrieved successfully');
     }
 
     /**
@@ -237,7 +296,7 @@ class TimetableController extends Controller
     {
         $request->validate([
             'source_start' => 'required|date',
-            'source_end'   => 'required|date',
+            'source_end' => 'required|date',
             'target_start' => 'required|date',
         ]);
 
@@ -255,7 +314,7 @@ class TimetableController extends Controller
         $newEntries = [];
         foreach ($entries as $entry) {
             $newDate = \Carbon\Carbon::parse($entry->date)->addDays($daysDiff);
-            
+
             // Check if already exists for target date/time/class
             $exists = TimetableEntry::where('school_id', $schoolId)
                 ->where('date', $newDate->toDateString())

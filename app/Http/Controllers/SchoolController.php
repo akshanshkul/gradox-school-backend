@@ -25,11 +25,21 @@ class SchoolController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
-            'role_id' => 'required|exists:roles,id',
+            'role_id' => 'required_without:role|exists:roles,id',
+            'role' => 'required_without:role_id|string',
             'profile_picture' => 'nullable|image|max:2048',
             'is_teaching' => 'required|string', // "true" or "false" from FormData
             'staff_subtype' => 'nullable|string|max:255',
         ]);
+
+        $roleId = $request->role_id;
+        if (!$roleId && $request->role) {
+            $role = Role::where('slug', $request->role)->where('school_id', $request->user()->school_id)->first();
+            if (!$role) {
+                return response()->json(['success' => 0, 'message' => 'Valid role mapping not found.'], 422);
+            }
+            $roleId = $role->id;
+        }
 
         $profilePicturePath = null;
         if ($request->hasFile('profile_picture')) {
@@ -47,7 +57,7 @@ class SchoolController extends Controller
             'email' => $request->email,
             'password' => Hash::make($request->password),
             'school_id' => $request->user()->school_id,
-            'role_id' => $request->role_id,
+            'role_id' => $roleId,
             'is_teaching' => $request->is_teaching === 'true',
             'staff_subtype' => $request->staff_subtype,
             'profile_picture' => $profilePicturePath,
@@ -70,6 +80,24 @@ class SchoolController extends Controller
     public function getTeachers(Request $request)
     {
         return $this->successResponse($request->user()->school->users()->where('status', 'active')->with('role_relation')->get());
+    }
+
+    public function getClasses(Request $request)
+    {
+        return $this->successResponse(
+            $request->user()->school->classes()
+                ->with(['grade', 'section', 'classTeacher', 'defaultClassroom'])
+                ->get()
+        );
+    }
+
+    public function getSessions(Request $request)
+    {
+        return $this->successResponse(
+            \App\Models\Session::where('school_id', $request->user()->school_id)
+                ->orderBy('start_date', 'desc')
+                ->get()
+        );
     }
 
     public function getInactiveStaff(Request $request)
@@ -209,7 +237,7 @@ class SchoolController extends Controller
         $teacher = User::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
 
         $request->validate([
-            'role_id' => 'required|exists:roles,id',
+            'role_id' => 'sometimes|required|exists:roles,id',
             'is_teaching' => 'nullable|boolean',
             'staff_subtype' => 'nullable|string|max:255',
             'education' => 'nullable|array',
@@ -360,6 +388,8 @@ class SchoolController extends Controller
 
         // Recalculate sort order for the school
         $this->recalculatePeriodSortOrder($school_id);
+        
+        \App\Services\SafeCache::forget("school_{$school_id}_dashboard_general_data");
 
         return response()->json($period);
     }
@@ -368,6 +398,9 @@ class SchoolController extends Controller
     {
         $period = SchoolPeriod::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $period->delete();
+        
+        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
+        
         return response()->json(['success' => true]);
     }
 
@@ -421,7 +454,15 @@ class SchoolController extends Controller
                 : (int) env('SUBSCRIPTION_GRACE_DAYS', 0);
 
             return [
-                'school' => $school,
+                'school' => [
+                    'id' => $school->id,
+                    'name' => $school->name,
+                    'slug' => $school->slug,
+                    'logo_path' => $school->logo_path,
+                    'current_session' => $school->current_session,
+                    'plan_name' => $school->plan_name,
+                    'subscription_status' => $school->subscription_status,
+                ],
                 'effective_grace_days' => $effectiveGraceDays,
                 'grades' => $school->grades,
                 'sections' => $school->sections,
@@ -437,10 +478,13 @@ class SchoolController extends Controller
 
         // 2. PRUNING: Only restrict if user is NOT an admin/super-admin
         if (!$user->isAdmin() && !$user->hasPermission('manage_all_classes')) {
-            // Find all Class IDs the teacher is involved in (Assigned via Timetable OR as Class Teacher)
-            $assignedClassIds = $user->timetableEntries()->pluck('school_class_id')->unique()->toArray();
-            $managedClassIds = $user->managedClasses()->pluck('id')->unique()->toArray();
-            $allVisibleClassIds = array_unique(array_merge($assignedClassIds, $managedClassIds));
+            // Cache teacher's visible class IDs for 10 minutes to reduce remote DB latency
+            $cacheKey = "user_{$user->id}_visible_classes";
+            $allVisibleClassIds = \App\Services\SafeCache::remember($cacheKey, 600, function() use ($user) {
+                $assignedClassIds = $user->timetableEntries()->pluck('school_class_id')->unique()->toArray();
+                $managedClassIds = $user->managedClasses()->pluck('id')->unique()->toArray();
+                return array_unique(array_merge($assignedClassIds, $managedClassIds));
+            });
 
             // A. Filter Classes: Only show classes where they teach or manage
             $data['classes'] = $data['classes']->filter(function($cls) use ($allVisibleClassIds) {
@@ -683,6 +727,59 @@ class SchoolController extends Controller
             'inquiries' => $inquiryCount,
             'admissions' => $admissionCount,
             'total' => $inquiryCount + $admissionCount
+        ]);
+    }
+
+    public function checkPublicSlugAvailability(Request $request)
+    {
+        $school = \App\Models\School::where('slug', $request->slug)->first();
+        if ($school) {
+            return response()->json([
+                'success' => 1,
+                'message' => 'This subdomain is already taken.',
+                'data' => [
+                    'available' => false
+                ]
+            ]);
+        }
+
+        return response()->json([
+            'success' => 1,
+            'message' => 'Success',
+            'data' => [
+                'available' => true
+            ]
+        ]);
+    }
+
+    public function searchSchools(Request $request)
+    {
+        $query = $request->query('q');
+        if (!$query || strlen($query) < 2) {
+            return $this->successResponse([]);
+        }
+
+        $schools = \App\Models\School::where('name', 'LIKE', "%{$query}%")
+            ->select('id', 'name', 'slug', 'logo_path')
+            ->limit(10)
+            ->get();
+
+        return $this->successResponse($schools);
+    }
+
+    public function getConfig(Request $request)
+    {
+        $school = $request->user()->school;
+        return $this->successResponse([
+            'landing_theme_config' => $school->landing_theme_config,
+            'admission_form_config' => $school->admission_form_config,
+            'email_settings' => $school->email_settings,
+            'about_text' => $school->about_text,
+            'tagline' => $school->tagline,
+            'custom_domain' => $school->custom_domain,
+            'address' => $school->address,
+            'contact_number' => $school->contact_number,
+            'registration_no' => $school->registration_no,
         ]);
     }
 

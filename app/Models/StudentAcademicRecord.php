@@ -12,7 +12,6 @@ class StudentAcademicRecord extends Model
     protected $fillable = [
         'student_id',
         'school_class_id',
-        'section_id',
         'academic_year',
         'roll_number',
         'status',
@@ -26,10 +25,5 @@ class StudentAcademicRecord extends Model
     public function schoolClass()
     {
         return $this->belongsTo(SchoolClass::class);
-    }
-
-    public function section()
-    {
-        return $this->belongsTo(Section::class);
     }
 }

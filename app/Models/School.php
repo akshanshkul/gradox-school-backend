@@ -17,9 +17,9 @@ class School extends Model
     use HasFactory, ClearsSchoolCache;
 
     protected $fillable = [
-        'name', 
-        'email', 
-        'address', 
+        'name',
+        'email',
+        'address',
         'registration_no',
         'contact_number',
         'slug',
@@ -95,5 +95,32 @@ class School extends Model
     public function classrooms()
     {
         return $this->hasMany(Classroom::class);
+    }
+
+    public function sessions()
+    {
+        return $this->hasMany(Session::class);
+    }
+
+    /**
+     * Get the currently active academic session.
+     * Fallback: Auto-creates a default session if none exists.
+     */
+    public function getActiveSession()
+    {
+        $active = $this->sessions()->where('is_active', true)->first();
+
+        if (!$active) {
+            $year = date('Y');
+            $nextYear = date('y', strtotime('+1 year'));
+            $active = $this->sessions()->create([
+                'name' => $year . '-' . $nextYear,
+                'start_date' => $year . '-04-01',
+                'end_date' => (date('Y') + 1) . '-03-31',
+                'is_active' => true
+            ]);
+        }
+
+        return $active;
     }
 }

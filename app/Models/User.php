@@ -27,8 +27,10 @@ class User extends Authenticatable
         'role_id',
         'is_teaching',
         'staff_subtype',
+        'phone',
         'profile_picture',
         'teacher_details',
+        'bio',
         'status',
         'exit_date',
         'permission_overrides'
@@ -68,6 +70,13 @@ class User extends Authenticatable
         'status' => 'string',
         'exit_date' => 'date',
     ];
+
+    protected $appends = ['photo_path'];
+
+    public function getPhotoPathAttribute()
+    {
+        return $this->profile_picture;
+    }
 
     public const SLUG_SUPER_ADMIN = 'super-admin';
     public const SLUG_ADMIN = 'administrator';

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\School;
 use Illuminate\Http\Request;
+use App\Models\Role;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -16,6 +17,7 @@ class AuthController extends Controller
         $request->validate([
             'school_name' => 'required|string|max:255',
             'school_email' => 'required|email|unique:schools,email',
+            'slug' => 'required|string|alpha_dash|max:255|unique:schools,slug',
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8|confirmed',
@@ -25,6 +27,7 @@ class AuthController extends Controller
             $school = School::create([
                 'name' => $request->school_name,
                 'email' => $request->school_email,
+                'slug' => $request->slug,
                 'plan_name' => 'Grow',
                 'subscription_status' => 'trialing',
                 'subscription_expires_at' => now()->addMonth(),

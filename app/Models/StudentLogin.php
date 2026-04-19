@@ -18,6 +18,7 @@ class StudentLogin extends Authenticatable
         'admission_number',
         'email',
         'password',
+        'last_read_circular_at',
     ];
 
     protected $hidden = [
@@ -27,6 +28,7 @@ class StudentLogin extends Authenticatable
 
     protected $casts = [
         'password' => 'hashed',
+        'last_read_circular_at' => 'datetime',
     ];
 
     public function student()

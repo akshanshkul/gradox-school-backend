@@ -38,14 +38,12 @@ class AdmissionController extends Controller
     {
         $request->validate([
             'school_class_id' => 'required|exists:school_classes,id',
-            'section_id' => 'nullable|exists:sections,id',
         ]);
 
         $school = $request->user()->school;
-        $session = $school->current_session ?? date('Y');
+        $session = $school->getActiveSession()->id;
 
         $usedRolls = \App\Models\StudentAcademicRecord::where('school_class_id', $request->school_class_id)
-            ->where('section_id', $request->section_id)
             ->where('academic_year', $session)
             ->whereNotNull('roll_number')
             ->whereRaw("roll_number REGEXP '^[0-9]+$'")
@@ -72,15 +70,13 @@ class AdmissionController extends Controller
     {
         $request->validate([
             'school_class_id' => 'required|exists:school_classes,id',
-            'section_id' => 'nullable|exists:sections,id',
         ]);
 
         return DB::transaction(function() use ($request) {
             $school = $request->user()->school;
-            $session = $school->current_session ?? date('Y');
+            $session = $school->getActiveSession()->id;
 
             $records = \App\Models\StudentAcademicRecord::where('school_class_id', $request->school_class_id)
-                ->where('section_id', $request->section_id)
                 ->where('academic_year', $session)
                 ->with('student')
                 ->get()
@@ -189,7 +185,6 @@ class AdmissionController extends Controller
             'admission_number' => 'required|string|unique:students,admission_number',
             'aadhaar_number' => 'required|string|size:12',
             'school_class_id' => 'required|exists:school_classes,id',
-            'section_id' => 'nullable|exists:sections,id',
             'roll_number' => 'nullable|string',
         ]);
 
@@ -221,8 +216,7 @@ class AdmissionController extends Controller
             \App\Models\StudentAcademicRecord::create([
                 'student_id' => $student->id,
                 'school_class_id' => $request->school_class_id,
-                'section_id' => $request->section_id,
-                'academic_year' => $school->current_session ?? date('Y'),
+                'academic_year' => $school->getActiveSession()->id,
                 'roll_number' => $request->roll_number,
                 'status' => 'active'
             ]);

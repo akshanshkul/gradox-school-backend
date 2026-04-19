@@ -17,4 +17,9 @@ class Grade extends Model
     {
         return $this->belongsTo(School::class);
     }
+
+    public function feeAssignments()
+    {
+        return $this->hasMany(FeeAssignment::class);
+    }
 }
