@@ -2,6 +2,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\ParentAuthController;
 use App\Http\Controllers\SchoolController;
 use App\Http\Controllers\TimetableController;
 use App\Http\Controllers\SubstitutionController;
@@ -22,6 +23,9 @@ use App\Http\Controllers\Admin\FeeTypeController;
 use App\Http\Controllers\Admin\FeeAssignmentController;
 use App\Http\Controllers\Admin\FinanceReportController;
 use App\Http\Controllers\Admin\SessionController;
+use App\Http\Controllers\Admin\ExamConfigurationController;
+use App\Http\Controllers\Teacher\MarkManagementController;
+use App\Http\Controllers\Admin\AcademicPromotionController;
 use App\Http\Controllers\API\OnlinePaymentController;
 use App\Http\Controllers\Teacher\FineController;
 
@@ -35,21 +39,16 @@ Route::get('/school/check-slug-availability', [SchoolController::class, 'checkPu
 Route::get('/school/public/cms', [LandingPageController::class, 'getCMSData']);
 
 Route::post('/inquiries', [InquiryController::class, 'store']);
+Route::post('/demo-request', [InquiryController::class, 'storeDemoRequest']);
 Route::post('/admissions', [AdmissionController::class, 'store']);
 
 
 // teacher and admin
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
-    Route::get('/user', function (Request $request) {
-        return $request->user()->load([
-            'school' => function ($q) {
-                $q->select('id', 'name', 'slug', 'logo_path', 'current_session', 'plan_name', 'subscription_status');
-            },
-            'role_relation',
-            'managedClasses'
-        ]);
-    });
+    Route::get('/user', [AuthController::class, 'me']);
+    Route::get('/school/bootstrap', [SchoolController::class, 'getBootstrapData']);
+    Route::get('/school/configuration', [SchoolController::class, 'getConfiguration']);
     Route::get('/school/config', [SchoolController::class, 'getConfig']);
     Route::get('/school/data', [SchoolController::class, 'getData']);
     Route::get('/school/notifications/counts', [SchoolController::class, 'getNotificationCounts']);
@@ -58,6 +57,35 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/settings', [SchoolController::class, 'updateSettings']);
         Route::get('/school/check-availability', [SchoolController::class, 'checkAvailability']);
         Route::get('/school/settings/email-preview', [SchoolController::class, 'getEmailPreview']);
+
+        // Exam Configuration & Analytics
+        Route::get('/school/examination/terms', [ExamConfigurationController::class, 'getTerms']);
+        Route::get('/school/examination/types', [ExamConfigurationController::class, 'getTypes']);
+        Route::get('/school/examination/grading-scales', [ExamConfigurationController::class, 'getGradingScales']);
+        Route::get('/school/examination/structures', [ExamConfigurationController::class, 'getStructures']);
+        Route::post('/school/examination/terms', [ExamConfigurationController::class, 'storeTerm']);
+        Route::post('/school/examination/types', [ExamConfigurationController::class, 'storeType']);
+        Route::post('/school/examination/grading-scales', [ExamConfigurationController::class, 'storeGradingScale']);
+        Route::post('/school/examination/structures', [ExamConfigurationController::class, 'storeStructure']);
+        Route::post('/school/examination/structures/batch', [ExamConfigurationController::class, 'storeStructureBatch']);
+        Route::post('/school/examination/structures/clone', [ExamConfigurationController::class, 'cloneStructure']);
+
+        Route::get('/school/examination/promotion-roster', [AcademicPromotionController::class, 'getPromotionRoster']);
+        Route::post('/school/examination/promote', [AcademicPromotionController::class, 'promote']);
+        Route::get('/school/examination/analytics/rankings', [\App\Http\Controllers\Admin\ExamAnalyticsController::class, 'getRankings']);
+        Route::get('/school/examination/analytics/toppers', [\App\Http\Controllers\Admin\ExamAnalyticsController::class, 'getToppers']);
+
+        // Subjects & Infrastructure
+        Route::get('/school/subjects-list', [SchoolController::class, 'getSubjects']);
+        Route::post('/school/subjects', [SchoolController::class, 'addSubject']);
+        Route::delete('/school/subjects/{id}', [SchoolController::class, 'deleteSubject']);
+        Route::get('/school/teachers', [SchoolController::class, 'getTeachers']);
+        Route::get('/school/classes', [SchoolController::class, 'getClasses']);
+        Route::get('/school/grades', [SchoolController::class, 'getGrades']);
+        Route::get('/school/sections', [SchoolController::class, 'getSections']);
+        Route::get('/school/classrooms', [SchoolController::class, 'getClassrooms']);
+        Route::get('/school/periods', [SchoolController::class, 'getPeriods']);
+        Route::get('/school/events', [SchoolController::class, 'getEvents']);
 
         // Admissions for Admin - status changes & approval
         Route::get('/school/admissions', [AdmissionController::class, 'index']);
@@ -79,10 +107,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/school/inquiries', [InquiryController::class, 'index']);
         Route::patch('/school/inquiries/{id}/status', [InquiryController::class, 'updateStatus']);
 
-        // Resource Routes - School Setup
-        Route::get('/school/teachers', [SchoolController::class, 'getTeachers']);
-        Route::get('/school/classes', [SchoolController::class, 'getClasses']);
-        
         // Session Management
         Route::get('/school/sessions', [SessionController::class, 'index']);
         Route::post('/school/sessions', [SessionController::class, 'store']);
@@ -107,7 +131,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/classes/{id}/subjects', [SchoolController::class, 'syncSubjects']);
         Route::delete('/school/classes/{id}', [SchoolController::class, 'deleteClass']);
 
-        Route::post('/school/subjects', [SchoolController::class, 'addSubject']);
         Route::delete('/school/subjects/{id}', [SchoolController::class, 'deleteSubject']);
 
         Route::post('/school/classrooms', [SchoolController::class, 'addClassroom']);
@@ -115,6 +138,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Academic Events & Holidays
 
+        Route::get('/school/events', [SchoolController::class, 'getEvents']);
         Route::post('/school/events', [SchoolController::class, 'addEvent']);
         Route::delete('/school/events/{id}', [SchoolController::class, 'deleteEvent']);
 
@@ -195,7 +219,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/payment', [FeePaymentController::class, 'store']);
             Route::apiResource('types', FeeTypeController::class);
             Route::apiResource('assignments', FeeAssignmentController::class);
-            
+
             // Analytics & Reports
             Route::get('/overview', [FinanceReportController::class, 'getOverview']);
             Route::get('/ledger', [FinanceReportController::class, 'getLedger']);
@@ -203,6 +227,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Fines (Admin/Teacher)
         Route::post('/school/fines', [FineController::class, 'store']);
+
+        // Mark Entry (Teacher/Admin)
+        Route::prefix('school/marks')->group(function () {
+            Route::get('/entry-sheet', [MarkManagementController::class, 'getEntrySheet']);
+            Route::post('/submit', [MarkManagementController::class, 'submitMarks']);
+            Route::post('/publish', [MarkManagementController::class, 'publishMarks']);
+            Route::post('/scholastic', [MarkManagementController::class, 'submitScholastic']);
+        });
+
     });
 });
 
@@ -216,6 +249,12 @@ Route::post('/students/forgot-password', [StudentController::class, 'requestPass
 Route::post('/students/verify-otp', [StudentController::class, 'verifyOtp']);
 Route::post('/students/reset-password', [StudentController::class, 'resetPassword']);
 
+// Parent Application Routes
+Route::post('/parents/send-otp', [ParentAuthController::class, 'sendOtp']);
+Route::post('/parents/verify-otp', [ParentAuthController::class, 'verifyOtp']);
+Route::post('/parents/login-as-student', [ParentAuthController::class, 'loginAsStudent']);
+Route::get('/parents/students', [ParentAuthController::class, 'getStudents']);
+
 Route::middleware('auth:sanctum')->group(function () {
     // Student Application Routes (Priority)
     Route::get('/students/profile', [StudentController::class, 'profile']);
@@ -228,6 +267,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/students/teachers/{id}', [StudentController::class, 'getTeacherProfile']);
     Route::get('/students/circulars', [CircularController::class, 'studentIndex']);
     Route::get('/students/attendance/report', [StudentAttendanceController::class, 'getPersonalReport']);
+    Route::get('/students/results', [StudentController::class, 'getResults']);
 
     // Notifications & Device Tokens
     Route::post('/students/device-token', [StudentController::class, 'updateDeviceToken']);

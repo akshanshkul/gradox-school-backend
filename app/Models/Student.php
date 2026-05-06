@@ -26,6 +26,7 @@ class Student extends Model
         'previous_school',
         'tc_details',
         'photo_path',
+        'parent_email',
         'status'
     ];
 
@@ -76,5 +77,15 @@ class Student extends Model
     public function payments()
     {
         return $this->hasMany(FeePayment::class);
+    }
+
+    public function examMarks()
+    {
+        return $this->hasMany(StudentExamMark::class);
+    }
+
+    public function scholasticAssessments()
+    {
+        return $this->hasMany(ScholasticAssessment::class);
     }
 }

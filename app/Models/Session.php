@@ -27,4 +27,9 @@ class Session extends Model
     {
         return $this->belongsTo(School::class);
     }
+
+    public function examTerms()
+    {
+        return $this->hasMany(ExamTerm::class);
+    }
 }

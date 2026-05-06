@@ -5,17 +5,15 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-use App\Traits\ClearsSchoolCache;
-
-class Subject extends Model
+class ExamTerm extends Model
 {
-    use HasFactory, ClearsSchoolCache;
+    use HasFactory;
 
-    protected $fillable = ['school_id', 'name', 'code'];
+    protected $fillable = ['school_id', 'session_id', 'name', 'weightage', 'is_active'];
 
-    public function school()
+    public function session()
     {
-        return $this->belongsTo(School::class);
+        return $this->belongsTo(Session::class);
     }
 
     public function examStructures()

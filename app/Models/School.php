@@ -102,6 +102,21 @@ class School extends Model
         return $this->hasMany(Session::class);
     }
 
+    public function events()
+    {
+        return $this->hasMany(SchoolEvent::class);
+    }
+
+    public function periods()
+    {
+        return $this->hasMany(SchoolPeriod::class);
+    }
+
+    public function roleWorkloadConfigs()
+    {
+        return $this->hasMany(RoleWorkloadConfig::class);
+    }
+
     /**
      * Get the currently active academic session.
      * Fallback: Auto-creates a default session if none exists.

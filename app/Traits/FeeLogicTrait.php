@@ -28,7 +28,12 @@ trait FeeLogicTrait
         
         // Capping target months at multiplier (12 for monthly) to prevent overflow
         $targetMonths = min($multiplier, (int)$monthsPassed + 1);
-        $coveredMonths = floor(($totalCoverage + 0.01) / $installmentAmount);
+        
+        // Safety check to prevent division by zero
+        $coveredMonths = 0;
+        if ($installmentAmount > 0) {
+            $coveredMonths = floor(($totalCoverage + 0.01) / $installmentAmount);
+        }
         
         $pendingMonthsCount = max(0, $targetMonths - $coveredMonths);
         

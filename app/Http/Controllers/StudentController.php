@@ -329,21 +329,32 @@ class StudentController extends Controller
             return $this->errorResponse('Student record not found', 404);
         }
 
-        $student = $login->student->load([
+        $student = $login->student;
+        $school = $student->school;
+        
+        // Use the official school method to get the active session ID
+        $activeSession = $school->getActiveSession();
+        $sessionId = $activeSession ? $activeSession->id : null;
+
+        // Load with official session filtering
+        $student->load([
+            'currentRecord' => function($query) use ($sessionId) {
+                if ($sessionId) {
+                    $query->where('academic_year', $sessionId);
+                }
+            },
             'currentRecord.schoolClass.grade',
             'currentRecord.schoolClass.section',
-            'school',
-            'academicRecords',
-            'documents.type',
-            'feeAssignments.feeType',
-            'feeAssignments.installments',
-            'fines.feeType',
-            'payments.transactions'
+            'school:id,name,slug,logo_path,current_session',
         ]);
 
         return $this->successResponse([
             'student' => $student,
-            'login' => $login
+            'login' => [
+                'id' => $login->id,
+                'email' => $login->email,
+                'username' => $login->username ?? $login->email
+            ]
         ]);
     }
 
@@ -359,7 +370,7 @@ class StudentController extends Controller
         $schoolId = $student->school_id;
         $activeSession = \App\Models\Session::where('school_id', $schoolId)->where('is_active', true)->first();
 
-        if (!$activeSession || !isset($activeSession->start_date)) {
+        if ($activeSession && !isset($activeSession->start_date)) {
              $activeSession = \App\Models\Session::find($activeSession->id);
         }
 
@@ -395,8 +406,28 @@ class StudentController extends Controller
         })
         ->get();
 
-        $processedAssignments = $assignments->map(function($a) use ($monthsPassed) {
+        // 2.5 Lifetime Payment Check for One-Time Fees
+        // Get all historical payments for this student to check for one-time fee coverage
+        $historicalPayments = \App\Models\FeePayment::where('student_id', $student->id)
+            ->where('status', 'paid')
+            ->whereHas('assignment', function($q) {
+                $q->whereHas('feeType', function($sq) {
+                    $sq->where('frequency_type', 'one_time');
+                });
+            })
+            ->with('assignment.feeType')
+            ->get();
+            
+        $paidOneTimeFeeTypeIds = $historicalPayments->pluck('assignment.fee_type_id')->unique()->toArray();
+
+        $processedAssignments = $assignments->map(function($a) use ($monthsPassed, $paidOneTimeFeeTypeIds) {
             $meta = $this->calculateInstallmentMeta($a, $monthsPassed);
+            
+            // Handle One-Time fees already paid in previous sessions
+            if ($a->feeType->frequency_type === 'one_time' && in_array($a->fee_type_id, $paidOneTimeFeeTypeIds)) {
+                // Return null to signify this should be hidden from the ledger
+                return null;
+            }
 
             return [
                 'id' => $a->id,
@@ -415,23 +446,24 @@ class StudentController extends Controller
                 'due_day' => $a->due_day,
                 'frequency' => $a->feeType->frequency_type,
             ];
-        });
+        })->filter()->values(); // Filter out the nulls and reset indices
 
-        // 3. Transactions History
+
+        // 3. Transactions History (LIFETIME - All sessions)
         $transactions = \App\Models\PaymentTransaction::whereHas('receipt', function($q) use ($student) {
             $q->where('student_id', $student->id);
         })
-        ->with('receipt.assignment.feeType')
+        ->with(['receipt.assignment.feeType'])
         ->orderBy('payment_date', 'desc')
         ->get()
         ->map(function($tx) {
             return [
                 'id' => $tx->id,
-                'fee_type' => $tx->receipt->assignment->feeType->name,
+                'fee_type' => $tx->receipt->assignment->feeType->name ?? 'Fee Payment',
                 'amount' => (float)$tx->amount,
-                'date' => $tx->payment_date,
+                'date' => $tx->payment_date ? $tx->payment_date->format('Y-m-d') : 'N/A',
                 'method' => $tx->method,
-                'receipt_no' => $tx->receipt->receipt_no
+                'receipt_no' => $tx->receipt->receipt_no ?? 'N/A'
             ];
         });
 
@@ -800,13 +832,6 @@ class StudentController extends Controller
         $month = $request->query('month', date('n'));
         $year = $request->query('year', date('Y'));
 
-        try {
-            $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
-            $endDate = $startDate->copy()->endOfMonth();
-        } catch (\Exception $e) {
-            return $this->errorResponse('Invalid date provided', 422);
-        }
-
         // Get student's class ID
         $currentRecord = $student->academicRecords()
             ->where('academic_year', $student->school->current_session)
@@ -874,6 +899,128 @@ class StudentController extends Controller
             'events' => $calendarData,
             'working_days' => $workingDays ?? ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
         ], 'Calendar events retrieved successfully');
+    }
+
+    public function getResults(Request $request)
+    {
+        $login = $request->user();
+        $student = $login->student;
+
+        if (!$student) {
+            return $this->errorResponse('Student record not found', 404);
+        }
+
+        $school = $student->school;
+        $sessionName = $school->current_session;
+        
+        // Find the actual session record to get the ID
+        $sessionRecord = \App\Models\Session::where('name', $sessionName)->first();
+        $sessionId = $sessionRecord ? $sessionRecord->id : $sessionName;
+
+        $currentRecord = $student->academicRecords()
+            ->where(function($q) use ($sessionId, $sessionName) {
+                $q->where('academic_year', $sessionId)
+                  ->orWhere('academic_year', $sessionName);
+            })
+            ->first();
+
+        if (!$currentRecord) {
+            return $this->successResponse([
+                'exams' => [],
+                'trends' => [],
+                'message' => "Your academic record for session '{$sessionName}' is not yet configured."
+            ], 'Profile not yet configured.');
+        }
+
+        $classId = $currentRecord->school_class_id;
+
+        // Fetch all marks for this student in current session
+        // ONLY fetch marks where the structure is marked as PUBLISHED
+        $marks = \App\Models\StudentExamMark::where('student_id', $student->id)
+            ->whereHas('examStructure', function($q) use ($sessionId) {
+                $q->where('is_published', true) // <--- Only published results
+                  ->whereHas('term', function($sq) use ($sessionId) {
+                    $sq->where('session_id', $sessionId);
+                });
+            })
+            ->with(['examStructure.type', 'examStructure.subject', 'examStructure.components', 'examStructure.term'])
+            ->get();
+
+        $academicService = new \App\Services\AcademicService();
+        
+        // Group by Exam Type name (e.g. Unit Test, Mid Term)
+        $groupedExams = [];
+        $examAverages = [];
+
+        $examTypes = $marks->pluck('examStructure.type')->unique('id');
+
+        foreach ($examTypes as $type) {
+            $typeMarks = $marks->filter(function($m) use ($type) {
+                return $m->examStructure->exam_type_id == $type->id;
+            });
+
+            // Group by Term for this Exam Type
+            $termsForType = $typeMarks->pluck('examStructure.term')->unique('id');
+
+            foreach ($termsForType as $term) {
+                $termTypeMarks = $typeMarks->filter(function($m) use ($term) {
+                    return $m->examStructure->exam_term_id == $term->id;
+                });
+
+                $subjectData = [];
+                $totalObtainedInExam = 0;
+                $totalMaxInExam = 0;
+
+                foreach ($termTypeMarks as $mark) {
+                    $structure = $mark->examStructure;
+                    $subject = $structure->subject;
+                    
+                    $maxMarks = $structure->components->sum('max_marks');
+                    $obtained = $mark->total_obtained;
+                    $percentage = $maxMarks > 0 ? round(($obtained / $maxMarks) * 100, 1) : 0;
+
+                    $totalObtainedInExam += $obtained;
+                    $totalMaxInExam += $maxMarks;
+
+                    // Calculate class average
+                    $classAvg = \App\Models\StudentExamMark::where('exam_structure_id', $structure->id)
+                        ->avg('total_obtained');
+                    
+                    $classAvgPercentage = $maxMarks > 0 ? round(($classAvg / $maxMarks) * 100, 1) : 0;
+
+                    $subjectData[] = [
+                        'id' => $mark->id,
+                        'subject' => $subject->name,
+                        'score' => $percentage,
+                        'obtained' => $obtained,
+                        'total' => $maxMarks,
+                        'grade' => $mark->grade_obtained ?? 'N/A',
+                        'rank' => '-',
+                        'avg' => $classAvgPercentage,
+                        'components' => $mark->component_marks
+                    ];
+                }
+
+                if (!empty($subjectData)) {
+                    $displayName = $term->name . ' - ' . $type->name;
+                    $groupedExams[$displayName] = $subjectData;
+                    $examAverages[] = [
+                        'label' => $displayName,
+                        'average' => $totalMaxInExam > 0 ? round(($totalObtainedInExam / $totalMaxInExam) * 100) : 0
+                    ];
+                }
+            }
+        }
+
+        return $this->successResponse([
+            'exams' => $groupedExams,
+            'trends' => $examAverages,
+            'summary' => [
+                'student_name' => $student->name,
+                'class_name' => $currentRecord->schoolClass->full_name ?? 'N/A',
+                'session' => $school->currentSession?->name
+            ]
+        ], 'Results retrieved successfully');
     }
 }
 

@@ -79,16 +79,39 @@ class SchoolController extends Controller
 
     public function getTeachers(Request $request)
     {
-        return $this->successResponse($request->user()->school->users()->where('status', 'active')->with('role_relation')->get());
+        try {
+            set_time_limit(120);
+            return $this->successResponse(
+                $request->user()->school->users()
+                    ->where('status', 'active')
+                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id')
+                    ->with('role_relation:id,name,slug')
+                    ->get()
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
 
     public function getClasses(Request $request)
     {
-        return $this->successResponse(
-            $request->user()->school->classes()
-                ->with(['grade', 'section', 'classTeacher', 'defaultClassroom'])
-                ->get()
-        );
+        try {
+            set_time_limit(120);
+            return $this->successResponse(
+                $request->user()->school->classes()
+                    ->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id', 'school_id')
+                    ->with([
+                        'grade:id,name', 
+                        'section:id,name', 
+                        'classTeacher:id,name', 
+                        'defaultClassroom:id,name', 
+                        'subjects:id,name'
+                    ])
+                    ->get()
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
 
     public function getSessions(Request $request)
@@ -120,6 +143,15 @@ class SchoolController extends Controller
         return $this->successResponse($grade, 'Grade level created successfully');
     }
 
+    public function getGrades(Request $request)
+    {
+        return $this->successResponse(
+            Grade::where('school_id', $request->user()->school_id)
+                ->orderBy('name')
+                ->get()
+        );
+    }
+
     public function addSection(Request $request)
     {
         $request->validate(['name' => 'required|string']);
@@ -128,6 +160,15 @@ class SchoolController extends Controller
             'school_id' => $request->user()->school_id,
         ]);
         return $this->successResponse($section, 'Section created successfully');
+    }
+
+    public function getSections(Request $request)
+    {
+        return $this->successResponse(
+            Section::where('school_id', $request->user()->school_id)
+                ->orderBy('name')
+                ->get()
+        );
     }
 
     public function addClass(Request $request)
@@ -196,11 +237,18 @@ class SchoolController extends Controller
 
         $schoolClass->subjects()->sync($syncData);
 
-        // Manually invalidate school data and scheduling caches
-        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
-        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_timetable_scheduling_data");
+        $schoolClass->subjects()->sync($syncData);
 
         return $this->successResponse($schoolClass->load('subjects'), 'Subjects synced successfully to class');
+    }
+
+    public function getSubjects(Request $request)
+    {
+        return $this->successResponse(
+            \App\Models\Subject::where('school_id', $request->user()->school_id)
+                ->orderBy('name', 'asc')
+                ->get()
+        );
     }
 
     public function addSubject(Request $request)
@@ -230,6 +278,15 @@ class SchoolController extends Controller
         ]);
 
         return $this->successResponse($classroom, 'Classroom added successfully');
+    }
+
+    public function getClassrooms(Request $request)
+    {
+        return $this->successResponse(
+            Classroom::where('school_id', $request->user()->school_id)
+                ->orderBy('name')
+                ->get()
+        );
     }
 
     public function updateTeacherDetails($id, Request $request)
@@ -286,7 +343,7 @@ class SchoolController extends Controller
     public function deleteTeacher($id, Request $request)
     {
         $teacher = User::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
-        
+
         $request->validate([
             'status' => 'required|in:inactive,exit',
             'exit_date' => 'required_if:status,exit|nullable|date',
@@ -370,6 +427,16 @@ class SchoolController extends Controller
         );
     }
 
+    public function getPeriods(Request $request)
+    {
+        return $this->successResponse(
+            SchoolPeriod::where('school_id', $request->user()->school_id)
+                ->orderBy('start_time')
+                ->orderBy('sort_order')
+                ->get()
+        );
+    }
+
     public function addPeriod(Request $request)
     {
         $request->validate([
@@ -388,8 +455,6 @@ class SchoolController extends Controller
 
         // Recalculate sort order for the school
         $this->recalculatePeriodSortOrder($school_id);
-        
-        \App\Services\SafeCache::forget("school_{$school_id}_dashboard_general_data");
 
         return response()->json($period);
     }
@@ -398,9 +463,7 @@ class SchoolController extends Controller
     {
         $period = SchoolPeriod::where('id', $id)->where('school_id', $request->user()->school_id)->firstOrFail();
         $period->delete();
-        
-        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
-        
+
         return response()->json(['success' => true]);
     }
 
@@ -425,6 +488,60 @@ class SchoolController extends Controller
         ], 'Password reset successful and sent to staff email.');
     }
 
+    public function getBootstrapData(Request $request)
+    {
+        $user = $request->user();
+        $user->load(['school', 'role_relation']);
+        $user->loadCount('managedClasses');
+
+        $school = $user->school;
+
+        $effectiveGraceDays = $school->grace_days > 0
+            ? (int) $school->grace_days
+            : (int) env('SUBSCRIPTION_GRACE_DAYS', 0);
+
+        return $this->successResponse([
+            'school' => [
+                'id' => $school->id,
+                'name' => $school->name,
+                'slug' => $school->slug,
+                'logo_path' => $school->logo_path,
+                'current_session' => $school->current_session,
+                'plan_name' => $school->plan_name,
+                'subscription_status' => $school->subscription_status,
+            ],
+            'effective_grace_days' => $effectiveGraceDays,
+            'user_permissions' => $user->role_relation ? $user->role_relation->permissions : [],
+            'managed_classes_count' => $user->managed_classes_count,
+        ]);
+    }
+
+    public function getConfiguration(Request $request)
+    {
+        $schoolId = $request->user()->school_id;
+        $requestedKeys = $request->query('only') ? explode(',', $request->query('only')) : null;
+        $shouldLoad = fn($key) => !$requestedKeys || in_array($key, $requestedKeys);
+
+        $data = [];
+        
+        if ($shouldLoad('sections'))
+            $data['sections'] = Section::where('school_id', $schoolId)->orderBy('name')->get();
+            
+        if ($shouldLoad('subjects'))
+            $data['subjects'] = Subject::where('school_id', $schoolId)->orderBy('name')->get();
+            
+        if ($shouldLoad('classrooms'))
+            $data['classrooms'] = Classroom::where('school_id', $schoolId)->orderBy('name')->get();
+            
+        if ($shouldLoad('periods'))
+            $data['periods'] = SchoolPeriod::where('school_id', $schoolId)
+                ->orderBy('start_time')
+                ->orderBy('sort_order')
+                ->get();
+
+        return $this->successResponse($data);
+    }
+
     public function updateRoleConfig(Request $request)
     {
         $request->validate([
@@ -443,75 +560,123 @@ class SchoolController extends Controller
 
     public function getData(Request $request)
     {
-        $school = $request->user()->school;
-        $schoolId = $school->id;
-        $user = $request->user();
+        try {
+            set_time_limit(120);
+            $schoolId = $request->user()->school_id;
+            $user = $request->user();
 
-        // 1. Get raw structure from cache
-        $data = \App\Services\SafeCache::remember("school_{$schoolId}_dashboard_general_data", 1800, function () use ($school) {
-            $effectiveGraceDays = $school->grace_days > 0 
-                ? (int) $school->grace_days 
-                : (int) env('SUBSCRIPTION_GRACE_DAYS', 0);
+            // Support for "light" requests: only load specific keys if requested
+            $requestedKeys = $request->query('only') ? explode(',', $request->query('only')) : null;
+            $shouldLoad = fn($key) => !$requestedKeys || in_array($key, $requestedKeys);
 
-            return [
-                'school' => [
-                    'id' => $school->id,
-                    'name' => $school->name,
-                    'slug' => $school->slug,
-                    'logo_path' => $school->logo_path,
-                    'current_session' => $school->current_session,
-                    'plan_name' => $school->plan_name,
-                    'subscription_status' => $school->subscription_status,
-                ],
-                'effective_grace_days' => $effectiveGraceDays,
-                'grades' => $school->grades,
-                'sections' => $school->sections,
-                'classes' => $school->classes()->with(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects'])->get(),
-                'subjects' => $school->subjects,
-                'classrooms' => $school->classrooms,
-                'teachers' => $school->users()->where('status', 'active')->with('role_relation')->get(),
-                'events' => SchoolEvent::where('school_id', $school->id)->with('schoolClass')->get(),
-                'role_configs' => RoleWorkloadConfig::where('school_id', $school->id)->get(),
-                'periods' => SchoolPeriod::where('school_id', $school->id)->orderBy('start_time')->orderBy('sort_order')->get(),
+            // 1. Build the eager loading array dynamically based on requested keys
+            $with = [];
+
+            if ($shouldLoad('grades'))
+                $with[] = 'grades:id,name,school_id';
+            if ($shouldLoad('sections'))
+                $with[] = 'sections:id,name,school_id';
+            if ($shouldLoad('subjects'))
+                $with[] = 'subjects:id,name,code,school_id';
+            if ($shouldLoad('classrooms'))
+                $with[] = 'classrooms:id,name,capacity,school_id';
+            if ($shouldLoad('role_configs'))
+                $with[] = 'roleWorkloadConfigs:id,school_id,role_name,min_classes_per_day,max_classes_per_day';
+            if ($shouldLoad('periods'))
+                $with[] = 'periods:id,school_id,name,start_time,end_time,sort_order,type';
+
+            if ($shouldLoad('events')) {
+                $with['events'] = fn($q) => $q->select('id', 'school_id', 'name', 'date', 'type', 'school_class_id')
+                    ->with('schoolClass:id,grade_id,section_id');
+            }
+
+            if ($shouldLoad('teachers')) {
+                $with['users'] = fn($q) => $q->where('status', 'active')
+                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id')
+                    ->with('role_relation:id,name,slug');
+            }
+
+            // Always load school basic info
+            $school = \App\Models\School::with($with)->findOrFail($schoolId);
+
+            $data = [];
+
+            // Always include school basic info
+            $data['school'] = [
+                'id' => $school->id,
+                'name' => $school->name,
+                'slug' => $school->slug,
+                'logo_path' => $school->logo_path,
+                'current_session' => $school->current_session,
+                'plan_name' => $school->plan_name,
+                'subscription_status' => $school->subscription_status,
+                'effective_grace_days' => $school->grace_days > 0 ? (int) $school->grace_days : (int) env('SUBSCRIPTION_GRACE_DAYS', 0),
             ];
-        });
 
-        // 2. PRUNING: Only restrict if user is NOT an admin/super-admin
-        if (!$user->isAdmin() && !$user->hasPermission('manage_all_classes')) {
-            // Cache teacher's visible class IDs for 10 minutes to reduce remote DB latency
-            $cacheKey = "user_{$user->id}_visible_classes";
-            $allVisibleClassIds = \App\Services\SafeCache::remember($cacheKey, 600, function() use ($user) {
+            // Conditionally add keys to response
+            if ($shouldLoad('grades'))
+                $data['grades'] = $school->grades->toArray();
+            if ($shouldLoad('sections'))
+                $data['sections'] = $school->sections->toArray();
+            if ($shouldLoad('classes')) {
+                // Use a JOIN-based query to reduce round-trips to the DB (Critical for Hostinger)
+                $data['classes'] = \DB::table('school_classes')
+                    ->where('school_classes.school_id', $schoolId)
+                    ->leftJoin('grades', 'school_classes.grade_id', '=', 'grades.id')
+                    ->leftJoin('sections', 'school_classes.section_id', '=', 'sections.id')
+                    ->leftJoin('users as teachers', 'school_classes.class_teacher_id', '=', 'teachers.id')
+                    ->leftJoin('classrooms', 'school_classes.default_classroom_id', '=', 'classrooms.id')
+                    ->select(
+                        'school_classes.*',
+                        'grades.name as grade_name',
+                        'sections.name as section_name',
+                        'teachers.name as teacher_name',
+                        'classrooms.name as classroom_name'
+                    )
+                    ->get()
+                    ->map(function($cls) {
+                        // Reconstruct the nested structure the frontend expects
+                        return [
+                            'id' => $cls->id,
+                            'grade_id' => $cls->grade_id,
+                            'section_id' => $cls->section_id,
+                            'class_teacher_id' => $cls->class_teacher_id,
+                            'default_classroom_id' => $cls->default_classroom_id,
+                            'school_id' => $cls->school_id,
+                            'grade' => ['id' => $cls->grade_id, 'name' => $cls->grade_name],
+                            'section' => ['id' => $cls->section_id, 'name' => $cls->section_name],
+                            'class_teacher' => ['id' => $cls->class_teacher_id, 'name' => $cls->teacher_name],
+                            'default_classroom' => ['id' => $cls->default_classroom_id, 'name' => $cls->classroom_name],
+                        ];
+                    })->toArray();
+            }
+            if ($shouldLoad('subjects'))
+                $data['subjects'] = $school->subjects->toArray();
+            if ($shouldLoad('classrooms'))
+                $data['classrooms'] = $school->classrooms->toArray();
+            if ($shouldLoad('teachers'))
+                $data['teachers'] = $school->users->toArray();
+            if ($shouldLoad('events'))
+                $data['events'] = $school->events->toArray();
+            if ($shouldLoad('role_configs'))
+                $data['role_configs'] = $school->roleWorkloadConfigs->toArray();
+            if ($shouldLoad('periods'))
+                $data['periods'] = $school->periods->sortBy('start_time')->values()->toArray();
+
+            // 3. User-specific filtering (only if classes are being returned)
+            if ($shouldLoad('classes') && !$user->isAdmin() && !$user->hasPermission('manage_all_classes')) {
                 $assignedClassIds = $user->timetableEntries()->pluck('school_class_id')->unique()->toArray();
                 $managedClassIds = $user->managedClasses()->pluck('id')->unique()->toArray();
-                return array_unique(array_merge($assignedClassIds, $managedClassIds));
-            });
+                $visibleClassIds = array_unique(array_merge($assignedClassIds, $managedClassIds));
 
-            // A. Filter Classes: Only show classes where they teach or manage
-            $data['classes'] = $data['classes']->filter(function($cls) use ($allVisibleClassIds) {
-                return in_array($cls->id, $allVisibleClassIds);
-            })->values();
-
-            // B. Filter Subjects: Only show subjects from visible classes OR specialized by teacher
-            $visibleSubjectIds = $data['classes']->flatMap(fn($c) => $c->subjects->pluck('id'))->unique()->toArray();
-            if (isset($user->teacher_details['specializations'])) {
-                $specIds = collect($user->teacher_details['specializations'])->pluck('subject_id')->toArray();
-                $visibleSubjectIds = array_unique(array_merge($visibleSubjectIds, $specIds));
+                $data['classes'] = array_values(array_filter($data['classes'], fn($cls) => in_array($cls['id'], $visibleClassIds)));
+                unset($data['role_configs']);
             }
-            $data['subjects'] = $data['subjects']->filter(fn($s) => in_array($s->id, $visibleSubjectIds))->values();
 
-            // C. Filter Classrooms: Only show rooms used in their classes or timetable
-            $visibleRoomIds = $data['classes']->pluck('default_classroom_id')->filter()->unique()->toArray();
-            $timetableRoomIds = $user->timetableEntries()->pluck('classroom_id')->filter()->unique()->toArray();
-            $allVisibleRoomIds = array_unique(array_merge($visibleRoomIds, $timetableRoomIds));
-            $data['classrooms'] = $data['classrooms']->filter(fn($r) => in_array($r->id, $allVisibleRoomIds))->values();
-
-            // D. Remove sensitive configuration data
-            unset($data['role_configs']);
-            
-            // E. Note: Staff list (teachers) remains visible as per user's preference for communication
+            return $this->successResponse($data, 'Institutional directory synced');
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
         }
-
-        return $this->successResponse($data, 'Institutional directory synced');
     }
 
     public function updateSettings(Request $request)
@@ -574,10 +739,6 @@ class SchoolController extends Controller
             'current_session' => $request->current_session,
         ]);
 
-        // Manually invalidate school data and scheduling caches
-        \App\Services\SafeCache::forget("school_{$school->id}_dashboard_general_data");
-        \App\Services\SafeCache::forget("school_{$school->id}_timetable_scheduling_data");
-
         return $this->successResponse($school, 'Institutional settings updated successfully');
     }
 
@@ -604,11 +765,11 @@ class SchoolController extends Controller
     public function getEmailPreview(Request $request)
     {
         $school = $request->user()->school;
-        
+
         $brandColor = $request->query('brand_color', $school->email_settings['brand_color'] ?? '#6366f1');
         $footerText = $request->query('footer_text', $school->email_settings['footer_text'] ?? '');
         $logoUrl = $request->query('logo_url', $school->email_settings['logo_url'] ?? $school->logo_path);
-        
+
         // New interactive branding tokens
         $emailBg = $request->query('email_bg', $school->email_settings['bg_color'] ?? '#0f172a');
         $contentBg = $request->query('content_bg', $school->email_settings['content_bg_color'] ?? '#1e293b');
@@ -621,7 +782,7 @@ class SchoolController extends Controller
 
         // Fetch custom HTML from database template (or global default) if no override provided
         $template = \App\Models\EmailTemplate::findBySlug($slug, $school->id);
-        
+
         $contentHtml = $previewContentHtml ?? 'Thank you for your application.';
         $subject = $previewSubject ?? 'Application Received';
 
@@ -659,7 +820,7 @@ class SchoolController extends Controller
             'phone' => '+1 (555) 000-0000',
             'admission_number' => 'ADM-' . date('Y') . '-0001',
         ]);
-        
+
         // Temporarily override school branding for the mock
         $mockApplication->school = clone $school;
         $mockApplication->school->email_settings = [
@@ -718,16 +879,28 @@ class SchoolController extends Controller
     }
     public function getNotificationCounts(Request $request)
     {
-        $schoolId = $request->user()->school_id;
+        try {
+            set_time_limit(60);
+            $schoolId = $request->user()->school_id;
 
-        $inquiryCount = \App\Models\Inquiry::where('school_id', $schoolId)->where('status', 'pending')->count();
-        $admissionCount = \App\Models\AdmissionApplication::where('school_id', $schoolId)->where('status', 'pending')->count();
+            // Optimized to single query using withCount
+            $school = \App\Models\School::where('id', $schoolId)
+                ->withCount([
+                    'inquiries as inquiries_count' => fn($q) => $q->where('status', 'pending'),
+                    'admissionApplications as admissions_count' => fn($q) => $q->where('status', 'pending')
+                ])->first();
 
-        return $this->successResponse([
-            'inquiries' => $inquiryCount,
-            'admissions' => $admissionCount,
-            'total' => $inquiryCount + $admissionCount
-        ]);
+            $inquiryCount = $school->inquiries_count ?? 0;
+            $admissionCount = $school->admissions_count ?? 0;
+
+            return $this->successResponse([
+                'inquiries' => $inquiryCount,
+                'admissions' => $admissionCount,
+                'total' => $inquiryCount + $admissionCount
+            ]);
+        } catch (\Exception $e) {
+            return $this->errorResponse($e->getMessage(), 500);
+        }
     }
 
     public function checkPublicSlugAvailability(Request $request)
@@ -801,10 +974,6 @@ class SchoolController extends Controller
         // Recalculate sort order for the school
         $this->recalculatePeriodSortOrder($request->user()->school_id);
 
-        // Manually invalidate school data and scheduling caches
-        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_dashboard_general_data");
-        \App\Services\SafeCache::forget("school_{$request->user()->school_id}_timetable_scheduling_data");
-
         return response()->json($period);
     }
 
@@ -841,10 +1010,6 @@ class SchoolController extends Controller
             }
         }
 
-        // Manually invalidate school data and scheduling caches
-        \App\Services\SafeCache::forget("school_{$schoolId}_dashboard_general_data");
-        \App\Services\SafeCache::forget("school_{$schoolId}_timetable_scheduling_data");
-
         return $this->successResponse([
             'count' => $createdCount
         ], "Successfully processed mappings. Found/Created $createdCount new unique classes.");
@@ -864,7 +1029,7 @@ class SchoolController extends Controller
                 $dt->modify('+55 minutes');
                 $period->end_time = $dt->format('H:i:s');
             }
-            
+
             $period->sort_order = $index + 1;
             $period->save();
         }

@@ -47,6 +47,11 @@ class SchoolClass extends Model
 
     public function subjects()
     {
-        return $this->belongsToMany(Subject::class, 'class_subject')->withPivot('periods_per_week');
+        return $this->belongsToMany(Subject::class, 'class_subject')->withPivot('periods_per_week', 'teacher_id');
+    }
+
+    public function examStructures()
+    {
+        return $this->hasMany(ExamStructure::class);
     }
 }

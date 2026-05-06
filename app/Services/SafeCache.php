@@ -8,40 +8,27 @@ use Illuminate\Support\Facades\Log;
 class SafeCache
 {
     /**
-     * Resilient remember function that falls back to the file driver if Redis is down.
+     * Reverted to direct execution as per user request to remove Redis and go "direct to db".
      */
-    public static function remember(string $key, int $seconds, \Closure $callback)
+    public static function remember($key, $seconds, $callback)
     {
-        $hasRedisExtension = extension_loaded('redis');
-        $hasPredis = class_exists('\Predis\Client');
-
-        // Only try Redis if the extension or predis library is actually installed
-        if ($hasRedisExtension || $hasPredis) {
-            try {
-                return Cache::store('redis')->remember($key, $seconds, $callback);
-            } catch (\Exception $e) {
-                Log::warning("Redis store failure, falling back to file for key [{$key}]: " . $e->getMessage());
-            }
-        }
-
-        // Fallback to File cache (which is safe and always available in Laravel)
-        try {
-            return Cache::store('file')->remember($key, $seconds, $callback);
-        } catch (\Exception $fe) {
-            // Absolute fallback - run the callback directly
-            return $callback();
-        }
+        // Direct execution of the logic without caching
+        return $callback();
     }
 
-    public static function forget(string $key)
+    public static function forget($key)
     {
-        try {
-            if (extension_loaded('redis') || class_exists('\Predis\Client')) {
-                Cache::store('redis')->forget($key);
-            }
-            Cache::store('file')->forget($key);
-        } catch (\Exception $e) {
-            Log::warning("Cache forget failure for key [{$key}]: " . $e->getMessage());
-        }
+        // No-op as caching is disabled
+        return true;
+    }
+
+    public static function get($key)
+    {
+        return null;
+    }
+
+    public static function put($key, $value, $seconds)
+    {
+        return true;
     }
 }

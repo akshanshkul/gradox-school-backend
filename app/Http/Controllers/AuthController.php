@@ -53,7 +53,16 @@ class AuthController extends Controller
             $token = $user->createToken('auth_token')->plainTextToken;
 
             return $this->successResponse([
-                'user' => $user->load('school', 'role_relation', 'managedClasses'),
+                'user' => $user->load([
+                    'school' => function ($q) {
+                        $q->select('id', 'name', 'slug', 'logo_path');
+                    },
+                    'role_relation',
+                    'managedClasses' => function ($q) {
+                        $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
+                          ->with(['grade:id,name', 'section:id,name']);
+                    }
+                ]),
                 'access_token' => $token,
                 'token_type' => 'Bearer',
             ], 'Welcome! Your institute has been registered.');
@@ -95,7 +104,16 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return $this->successResponse([
-            'user' => $user->load('school', 'role_relation', 'managedClasses'),
+            'user' => $user->load([
+                'school' => function ($q) {
+                    $q->select('id', 'name', 'slug', 'logo_path');
+                },
+                'role_relation',
+                'managedClasses' => function ($q) {
+                    $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
+                      ->with(['grade:id,name', 'section:id,name']);
+                }
+            ]),
             'access_token' => $token,
             'token_type' => 'Bearer',
         ], 'Login successful');
@@ -105,6 +123,22 @@ class AuthController extends Controller
     {
         $request->user()->currentAccessToken()->delete();
         return $this->successResponse(null, 'Logged out successfully');
+    }
+
+    public function me(Request $request)
+    {
+        return $this->successResponse(
+            $request->user()->load([
+                'school' => function ($q) {
+                    $q->select('id', 'name', 'slug', 'logo_path');
+                },
+                'role_relation',
+                'managedClasses' => function ($q) {
+                    $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
+                      ->with(['grade:id,name', 'section:id,name']);
+                }
+            ])
+        );
     }
 
     private function getFullDefaultPermissions()
