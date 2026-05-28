@@ -189,6 +189,20 @@ class SchoolController extends Controller
             'school_id' => $request->user()->school_id,
         ]);
 
+        if ($schoolClass->class_teacher_id) {
+            try {
+                \App\Models\Notification::create([
+                    'school_id' => $schoolClass->school_id,
+                    'notifiable_type' => \App\Models\User::class,
+                    'notifiable_id' => $schoolClass->class_teacher_id,
+                    'title' => 'Class Assigned',
+                    'message' => "You have been assigned as the Class Teacher for {$schoolClass->grade->name} {$schoolClass->section->name}.",
+                    'type' => 'success',
+                    'data' => ['type' => 'class_assigned', 'class_id' => $schoolClass->id]
+                ]);
+            } catch (\Exception $e) {}
+        }
+
         return $this->successResponse($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom']), 'Class mapping created successfully');
     }
 
@@ -214,6 +228,20 @@ class SchoolController extends Controller
             'default_classroom_id' => $request->default_classroom_id,
             'periods_per_day' => $request->periods_per_day,
         ]);
+
+        if ($schoolClass->wasChanged('class_teacher_id') && $schoolClass->class_teacher_id) {
+            try {
+                \App\Models\Notification::create([
+                    'school_id' => $schoolClass->school_id,
+                    'notifiable_type' => \App\Models\User::class,
+                    'notifiable_id' => $schoolClass->class_teacher_id,
+                    'title' => 'Class Assigned',
+                    'message' => "You have been assigned as the Class Teacher for {$schoolClass->grade->name} {$schoolClass->section->name}.",
+                    'type' => 'success',
+                    'data' => ['type' => 'class_assigned', 'class_id' => $schoolClass->id]
+                ]);
+            } catch (\Exception $e) {}
+        }
 
         return $this->successResponse($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']), 'Class configuration updated successfully');
     }
@@ -336,6 +364,21 @@ class SchoolController extends Controller
 
         $teacher->teacher_details = $details;
         $teacher->save();
+
+        // Notify teacher of profile update
+        try {
+            \App\Models\Notification::create([
+                'school_id' => $teacher->school_id,
+                'notifiable_type' => get_class($teacher),
+                'notifiable_id' => $teacher->id,
+                'title' => 'Profile Updated',
+                'message' => 'Your institutional profile details have been updated by the administrator.',
+                'type' => 'info',
+                'data' => ['type' => 'profile_update']
+            ]);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error("Failed to create notification: " . $e->getMessage());
+        }
 
         return $this->successResponse($teacher->load('role_relation'), 'Teacher details updated successfully');
     }
@@ -478,6 +521,17 @@ class SchoolController extends Controller
 
         try {
             \Illuminate\Support\Facades\Mail::to($staff->email)->send(new \App\Mail\StaffPasswordResetMail($staff, $newPassword));
+            
+            // App Notification
+            \App\Models\Notification::create([
+                'school_id' => $staff->school_id,
+                'notifiable_type' => get_class($staff),
+                'notifiable_id' => $staff->id,
+                'title' => 'Security Alert: Password Reset',
+                'message' => 'Your account password has been reset by the administrator. Please check your email for the new credentials.',
+                'type' => 'warning',
+                'data' => ['type' => 'password_reset']
+            ]);
         } catch (\Exception $e) {
             // Log the error but return the password so the admin can give it manually if mail fails
             \Illuminate\Support\Facades\Log::error("Mail failed: " . $e->getMessage());
@@ -610,6 +664,7 @@ class SchoolController extends Controller
                 'current_session' => $school->current_session,
                 'plan_name' => $school->plan_name,
                 'subscription_status' => $school->subscription_status,
+                'onboarding_steps' => $school->onboarding_steps,
                 'effective_grace_days' => $school->grace_days > 0 ? (int) $school->grace_days : (int) env('SUBSCRIPTION_GRACE_DAYS', 0),
             ];
 
@@ -696,6 +751,7 @@ class SchoolController extends Controller
             'landing_theme_config' => 'nullable|string',
             'email_settings' => 'nullable|string',
             'current_session' => 'nullable|string',
+            'onboarding_steps' => 'nullable|string',
         ]);
 
         $logoPath = $school->logo_path;
@@ -737,6 +793,7 @@ class SchoolController extends Controller
             'landing_theme_config' => $themeConfig,
             'email_settings' => $emailSettings,
             'current_session' => $request->current_session,
+            'onboarding_steps' => $request->has('onboarding_steps') ? json_decode($request->onboarding_steps, true) : $school->onboarding_steps,
         ]);
 
         return $this->successResponse($school, 'Institutional settings updated successfully');

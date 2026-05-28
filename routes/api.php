@@ -28,6 +28,10 @@ use App\Http\Controllers\Teacher\MarkManagementController;
 use App\Http\Controllers\Admin\AcademicPromotionController;
 use App\Http\Controllers\API\OnlinePaymentController;
 use App\Http\Controllers\Teacher\FineController;
+use App\Http\Controllers\Teacher\DashboardController as TeacherDashboardController;
+use App\Http\Controllers\TeacherAttendanceController;
+use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\Teacher\HomeworkController as TeacherHomeworkController;
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
@@ -286,6 +290,23 @@ Route::middleware('auth:sanctum')->group(function () {
     // Documents
     Route::get('/student-document-types', [DocumentTypeController::class, 'index']);
     Route::get('/students/fees', [StudentController::class, 'profile']);
+
+    // Teacher Attendance (Self-Attendance)
+    Route::get('/teacher/attendance/status', [TeacherAttendanceController::class, 'getStatus']);
+    Route::post('/teacher/attendance/check-in', [TeacherAttendanceController::class, 'checkIn']);
+    Route::post('/teacher/attendance/check-out', [TeacherAttendanceController::class, 'checkOut']);
+
+    // Teacher Dashboard
+    Route::get('/teacher/dashboard', [TeacherDashboardController::class, 'index']);
+
+    // Notifications
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::get('/notifications/stats', [NotificationController::class, 'getStats']);
+    Route::post('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
+
+    // Homework
+    Route::get('/teacher/homework', [TeacherHomeworkController::class, 'index']);
+    Route::post('/teacher/homework', [TeacherHomeworkController::class, 'store']);
 });
 
 Route::post('/webhooks/razorpay', [\App\Http\Controllers\API\WebhookController::class, 'handleRazorpay']);

@@ -15,7 +15,11 @@ class AttendanceController extends Controller
 
         $attendances = Attendance::where('school_id', $request->user()->school_id)
             ->where('date', $request->date)
-            ->with('user:id,name,role,profile_picture')
+            ->with([
+                'staffMember' => function($q) {
+                    $q->select('id', 'name', 'role_id', 'profile_picture');
+                }
+            ])
             ->get();
 
         return response()->json($attendances);
@@ -72,14 +76,19 @@ class AttendanceController extends Controller
 
         $savedIds = collect($savedRecords)->pluck('id');
         $records  = Attendance::whereIn('id', $savedIds)
-            ->with(['user:id,name,role,profile_picture', 'regularizedBy:id,name'])
+            ->with([
+                'staffMember' => function($q) {
+                    $q->select('id', 'name', 'role_id', 'profile_picture');
+                },
+                'regularizedBy' => function($q) {
+                    $q->select('id', 'name');
+                }
+            ])
             ->get();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Attendance successfully recorded.',
+        return $this->successResponse([
             'records' => $records,
-        ]);
+        ], 'Attendance successfully recorded.');
     }
 
     /**

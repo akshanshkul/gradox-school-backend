@@ -36,15 +36,23 @@ class School extends Model
         'subscription_expires_at',
         'grace_days',
         'current_session',
+        'latitude',
+        'longitude',
+        'geofence_radius',
+        'onboarding_steps',
     ];
 
     protected $casts = [
         'admission_form_config' => 'array',
         'landing_theme_config' => 'array',
         'email_settings' => 'array',
+        'onboarding_steps' => 'array',
         'working_days' => 'array',
         'subscription_expires_at' => 'datetime',
         'grace_days' => 'integer',
+        'latitude' => 'float',
+        'longitude' => 'float',
+        'geofence_radius' => 'integer',
     ];
 
     public function landingBanners()

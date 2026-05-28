@@ -705,8 +705,8 @@ class StudentController extends Controller
         $login = $request->user();
 
         \App\Models\StudentDeviceToken::updateOrCreate(
-            ['student_id' => $login->student_id, 'token' => $request->token],
-            ['updated_at' => now()]
+            ['token' => $request->token],
+            ['student_id' => $login->student_id, 'updated_at' => now()]
         );
 
         return $this->successResponse(null, 'Device token updated successfully');

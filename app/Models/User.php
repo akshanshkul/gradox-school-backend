@@ -78,6 +78,11 @@ class User extends Authenticatable
         return $this->profile_picture;
     }
 
+    public function getRoleAttribute()
+    {
+        return $this->role_relation->name ?? 'Staff';
+    }
+
     public const SLUG_SUPER_ADMIN = 'super-admin';
     public const SLUG_ADMIN = 'administrator';
     public const SLUG_TEACHER = 'teacher';
