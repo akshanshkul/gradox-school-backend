@@ -44,6 +44,10 @@ return [
             'driver' => 'sanctum',
             'provider' => 'students',
         ],
+        'platform_admin' => [
+            'driver' => 'sanctum',
+            'provider' => 'platform_admins',
+        ],
     ],
 
     'providers' => [
@@ -54,6 +58,10 @@ return [
         'students' => [
             'driver' => 'eloquent',
             'model' => App\Models\StudentLogin::class,
+        ],
+        'platform_admins' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\PlatformAdmin::class,
         ],
     ],
 

@@ -33,6 +33,9 @@ trait ClearsSchoolCache
         if ($schoolId) {
             SafeCache::forget("school_{$schoolId}_timetable_scheduling_data");
             SafeCache::forget("school_{$schoolId}_dashboard_general_data");
+            // Drop every per-user GET response cached for this school
+            // (bootstrap, school config, notification counts, etc.).
+            SafeCache::forgetPrefix("school_{$schoolId}_url_cache");
         }
     }
 }

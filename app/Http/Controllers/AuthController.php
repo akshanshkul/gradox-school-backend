@@ -74,6 +74,7 @@ class AuthController extends Controller
         $request->validate([
             'email' => 'required|email',
             'password' => 'required',
+            'school_slug' => 'nullable|string|max:255',
         ]);
 
         $user = User::where('email', $request->email)->first();
@@ -82,6 +83,19 @@ class AuthController extends Controller
             throw ValidationException::withMessages([
                 'email' => ['Invalid credentials.'],
             ]);
+        }
+
+        // If the request came from a branded school login URL (e.g. /demo-school-1/login),
+        // make sure the user actually belongs to THAT school. Prevents accidentally
+        // logging into another school by typing in a different school's credentials.
+        // Generic error message to avoid leaking which school an email belongs to.
+        if ($request->filled('school_slug')) {
+            $userSlug = optional($user->school)->slug;
+            if (!$userSlug || strcasecmp($userSlug, $request->school_slug) !== 0) {
+                throw ValidationException::withMessages([
+                    'email' => ['Invalid credentials.'],
+                ]);
+            }
         }
 
         if ($user->status === 'exit') {
