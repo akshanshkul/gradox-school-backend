@@ -90,7 +90,7 @@ class SchoolController extends Controller
             return $this->successResponse(
                 $request->user()->school->users()
                     ->where('status', 'active')
-                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id')
+                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id', 'users.is_teaching')
                     ->with('role_relation:id,name,slug')
                     ->get()
             );
@@ -251,7 +251,7 @@ class SchoolController extends Controller
             }
         }
 
-        return $this->successResponse($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']), 'Class configuration updated successfully');
+        return $this->successResponse($this->formatClassWithSubjects($schoolClass), 'Class configuration updated successfully');
     }
 
     public function syncSubjects(Request $request, $id)
@@ -260,6 +260,7 @@ class SchoolController extends Controller
             'subjects' => 'array',
             'subjects.*.id' => 'required|exists:subjects,id',
             'subjects.*.periods_per_week' => 'nullable|integer|min:1',
+            'subjects.*.teacher_id' => 'nullable|exists:users,id',
         ]);
 
         $schoolClass = SchoolClass::where('id', $id)
@@ -268,14 +269,206 @@ class SchoolController extends Controller
 
         $syncData = [];
         foreach ($request->subjects as $item) {
-            $syncData[$item['id']] = ['periods_per_week' => $item['periods_per_week'] ?? 1];
+            $syncData[$item['id']] = [
+                'periods_per_week' => $item['periods_per_week'] ?? 1,
+                'teacher_id' => $item['teacher_id'] ?? null,
+            ];
         }
 
         $schoolClass->subjects()->sync($syncData);
 
-        $schoolClass->subjects()->sync($syncData);
+        return $this->successResponse($this->formatClassWithSubjects($schoolClass), 'Subjects synced successfully to class');
+    }
 
-        return $this->successResponse($schoolClass->load('subjects'), 'Subjects synced successfully to class');
+    public function updateClassSubjectDetails(Request $request, $classId, $subjectId)
+    {
+        $user = $request->user();
+        $schoolClass = SchoolClass::where('id', $classId)
+            ->where('school_id', $user->school_id)
+            ->firstOrFail();
+
+        $pivot = \DB::table('class_subject')
+            ->where('school_class_id', $classId)
+            ->where('subject_id', $subjectId)
+            ->first();
+
+        if (!$pivot) {
+            return $this->errorResponse('Subject not assigned to this class.', 404);
+        }
+
+        // Authorization checks:
+        // 1. School Admin (isAdmin() is true)
+        // 2. Class Teacher (schoolClass->class_teacher_id === user->id)
+        // 3. Subject Teacher (pivot->teacher_id === user->id)
+        $isAuthorized = $user->isAdmin() 
+            || ((int)$schoolClass->class_teacher_id === (int)$user->id)
+            || ((int)$pivot->teacher_id === (int)$user->id);
+
+        if (!$isAuthorized) {
+            return $this->errorResponse('You are not authorized to edit this subject\'s notes or syllabus.', 403);
+        }
+
+        $request->validate([
+            'notes' => 'nullable|array',
+            'notes.*.id' => 'nullable|integer',
+            'notes.*.title' => 'required|string|max:255',
+            'notes.*.file_url' => 'nullable|string',
+            'notes.*.description' => 'nullable|string',
+            'syllabus' => 'nullable|array',
+            'syllabus.*.id' => 'nullable|integer',
+            'syllabus.*.topic' => 'required|string|max:255',
+            'syllabus.*.description' => 'nullable|string',
+            'syllabus.*.status' => 'required|in:pending,in-progress,completed',
+            'teacher_id' => 'nullable|exists:users,id',
+            'periods_per_week' => 'nullable|integer|min:1',
+        ]);
+
+        $updateData = [];
+        
+        // Only admins or class teachers can change the assigned teacher or periods per week
+        $canManageAssignment = $user->isAdmin() || ((int)$schoolClass->class_teacher_id === (int)$user->id);
+        if ($canManageAssignment) {
+            if ($request->has('teacher_id')) $updateData['teacher_id'] = $request->teacher_id;
+            if ($request->has('periods_per_week')) $updateData['periods_per_week'] = $request->periods_per_week;
+        }
+
+        if (!empty($updateData)) {
+            \DB::table('class_subject')
+                ->where('school_class_id', $classId)
+                ->where('subject_id', $subjectId)
+                ->update($updateData);
+        }
+
+        // 1. Sync notes
+        if ($request->has('notes')) {
+            $existingNoteIds = \DB::table('class_subject_notes')
+                ->where('class_subject_id', $pivot->id)
+                ->pluck('id')
+                ->toArray();
+
+            $updatedNoteIds = [];
+            foreach ($request->notes ?: [] as $noteData) {
+                if (!empty($noteData['id']) && in_array((int)$noteData['id'], $existingNoteIds)) {
+                    \DB::table('class_subject_notes')
+                        ->where('id', $noteData['id'])
+                        ->update([
+                            'title' => $noteData['title'],
+                            'file_url' => $noteData['file_url'] ?? null,
+                            'description' => $noteData['description'] ?? null,
+                            'updated_at' => now(),
+                        ]);
+                    $updatedNoteIds[] = (int)$noteData['id'];
+                } else {
+                    $newId = \DB::table('class_subject_notes')->insertGetId([
+                        'class_subject_id' => $pivot->id,
+                        'title' => $noteData['title'],
+                        'file_url' => $noteData['file_url'] ?? null,
+                        'description' => $noteData['description'] ?? null,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                    $updatedNoteIds[] = $newId;
+                }
+            }
+
+            // Delete notes that are no longer in the request
+            $notesToDelete = array_diff($existingNoteIds, $updatedNoteIds);
+            if (!empty($notesToDelete)) {
+                \DB::table('class_subject_notes')
+                    ->whereIn('id', $notesToDelete)
+                    ->delete();
+            }
+        }
+
+        // 2. Sync syllabus
+        if ($request->has('syllabus')) {
+            $existingSyllabusIds = \DB::table('class_subject_syllabus')
+                ->where('class_subject_id', $pivot->id)
+                ->pluck('id')
+                ->toArray();
+
+            $updatedSyllabusIds = [];
+            foreach ($request->syllabus ?: [] as $syllabusData) {
+                if (!empty($syllabusData['id']) && in_array((int)$syllabusData['id'], $existingSyllabusIds)) {
+                    \DB::table('class_subject_syllabus')
+                        ->where('id', $syllabusData['id'])
+                        ->update([
+                            'topic' => $syllabusData['topic'],
+                            'description' => $syllabusData['description'] ?? null,
+                            'status' => $syllabusData['status'],
+                            'updated_at' => now(),
+                        ]);
+                    $updatedSyllabusIds[] = (int)$syllabusData['id'];
+                } else {
+                    $newId = \DB::table('class_subject_syllabus')->insertGetId([
+                        'class_subject_id' => $pivot->id,
+                        'topic' => $syllabusData['topic'],
+                        'description' => $syllabusData['description'] ?? null,
+                        'status' => $syllabusData['status'],
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                    $updatedSyllabusIds[] = $newId;
+                }
+            }
+
+            // Delete syllabus items that are no longer in the request
+            $syllabusToDelete = array_diff($existingSyllabusIds, $updatedSyllabusIds);
+            if (!empty($syllabusToDelete)) {
+                \DB::table('class_subject_syllabus')
+                    ->whereIn('id', $syllabusToDelete)
+                    ->delete();
+            }
+        }
+
+        $updatedPivot = \DB::table('class_subject')
+            ->where('school_class_id', $classId)
+            ->where('subject_id', $subjectId)
+            ->first();
+
+        if ($updatedPivot) {
+            $updatedPivot->notes = \DB::table('class_subject_notes')
+                ->where('class_subject_id', $updatedPivot->id)
+                ->get()
+                ->toArray();
+            $updatedPivot->syllabus = \DB::table('class_subject_syllabus')
+                ->where('class_subject_id', $updatedPivot->id)
+                ->get()
+                ->toArray();
+        }
+
+        // Flush caches
+        try {
+            \App\Services\SafeCache::forgetPrefix("school_{$user->school_id}_url_cache");
+        } catch (\Throwable $e) {}
+
+        return $this->successResponse($updatedPivot, 'Class subject details updated successfully');
+    }
+
+    public function uploadSubjectNoteFile(Request $request, $classId, $subjectId)
+    {
+        $request->validate([
+            'file' => 'required|file|max:15360', // 15MB max for PDFs/materials
+        ]);
+
+        $user = $request->user();
+        
+        // Make sure class exists in this school
+        $schoolClass = SchoolClass::where('id', $classId)
+            ->where('school_id', $user->school_id)
+            ->firstOrFail();
+
+        $path = $request->file('file')->store('school/notes', ['disk' => 's3']);
+        if (!$path) {
+            return $this->errorResponse('Failed to upload file to cloud storage.', 500);
+        }
+
+        $url = \Storage::disk('s3')->url($path);
+
+        return $this->successResponse([
+            'file_url' => $url,
+            'file_name' => $request->file('file')->getClientOriginalName(),
+        ], 'File uploaded successfully');
     }
 
     public function getSubjects(Request $request)
@@ -654,7 +847,7 @@ class SchoolController extends Controller
 
             if ($shouldLoad('teachers')) {
                 $with['users'] = fn($q) => $q->where('status', 'active')
-                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id')
+                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id', 'users.is_teaching')
                     ->with('role_relation:id,name,slug');
             }
 
@@ -683,7 +876,7 @@ class SchoolController extends Controller
                 $data['sections'] = $school->sections->toArray();
             if ($shouldLoad('classes')) {
                 // Use a JOIN-based query to reduce round-trips to the DB (Critical for Hostinger)
-                $data['classes'] = \DB::table('school_classes')
+                $classesList = \DB::table('school_classes')
                     ->where('school_classes.school_id', $schoolId)
                     ->leftJoin('grades', 'school_classes.grade_id', '=', 'grades.id')
                     ->leftJoin('sections', 'school_classes.section_id', '=', 'sections.id')
@@ -696,22 +889,96 @@ class SchoolController extends Controller
                         'teachers.name as teacher_name',
                         'classrooms.name as classroom_name'
                     )
+                    ->get();
+
+                // Fetch class subject details including periods, teacher, notes, and syllabus
+                $classSubjects = \DB::table('class_subject')
+                    ->join('subjects', 'class_subject.subject_id', '=', 'subjects.id')
+                    ->select(
+                        'class_subject.id as class_subject_id',
+                        'class_subject.school_class_id',
+                        'class_subject.subject_id as id',
+                        'subjects.name',
+                        'subjects.code',
+                        'class_subject.periods_per_week',
+                        'class_subject.teacher_id'
+                    )
+                    ->get();
+
+                $classSubjectIds = $classSubjects->pluck('class_subject_id')->toArray();
+
+                // Fetch all notes for these class subjects
+                $notes = \DB::table('class_subject_notes')
+                    ->whereIn('class_subject_id', $classSubjectIds)
                     ->get()
-                    ->map(function ($cls) {
-                        // Reconstruct the nested structure the frontend expects
-                        return [
-                            'id' => $cls->id,
-                            'grade_id' => $cls->grade_id,
-                            'section_id' => $cls->section_id,
-                            'class_teacher_id' => $cls->class_teacher_id,
-                            'default_classroom_id' => $cls->default_classroom_id,
-                            'school_id' => $cls->school_id,
-                            'grade' => ['id' => $cls->grade_id, 'name' => $cls->grade_name],
-                            'section' => ['id' => $cls->section_id, 'name' => $cls->section_name],
-                            'class_teacher' => ['id' => $cls->class_teacher_id, 'name' => $cls->teacher_name],
-                            'default_classroom' => ['id' => $cls->default_classroom_id, 'name' => $cls->classroom_name],
-                        ];
-                    })->toArray();
+                    ->groupBy('class_subject_id');
+
+                // Fetch all syllabus for these class subjects
+                $syllabus = \DB::table('class_subject_syllabus')
+                    ->whereIn('class_subject_id', $classSubjectIds)
+                    ->get()
+                    ->groupBy('class_subject_id');
+
+                // Map subjects to classes
+                $classSubjectsGrouped = $classSubjects->map(function($sub) use ($notes, $syllabus) {
+                    $subNotes = isset($notes[$sub->class_subject_id])
+                        ? $notes[$sub->class_subject_id]->map(function($n) {
+                            return [
+                                'id' => $n->id,
+                                'class_subject_id' => $n->class_subject_id,
+                                'title' => $n->title,
+                                'file_url' => $n->file_url,
+                                'description' => $n->description,
+                                'created_at' => $n->created_at,
+                                'updated_at' => $n->updated_at,
+                            ];
+                        })->toArray()
+                        : [];
+
+                    $subSyllabus = isset($syllabus[$sub->class_subject_id])
+                        ? $syllabus[$sub->class_subject_id]->map(function($s) {
+                            return [
+                                'id' => $s->id,
+                                'class_subject_id' => $s->class_subject_id,
+                                'topic' => $s->topic,
+                                'description' => $s->description,
+                                'status' => $s->status,
+                                'created_at' => $s->created_at,
+                                'updated_at' => $s->updated_at,
+                            ];
+                        })->toArray()
+                        : [];
+
+                    return [
+                        'id' => $sub->id,
+                        'school_class_id' => $sub->school_class_id,
+                        'name' => $sub->name,
+                        'code' => $sub->code,
+                        'pivot' => [
+                            'id' => $sub->class_subject_id,
+                            'periods_per_week' => $sub->periods_per_week,
+                            'teacher_id' => $sub->teacher_id,
+                            'notes' => $subNotes,
+                            'syllabus' => $subSyllabus,
+                        ]
+                    ];
+                })->groupBy('school_class_id');
+
+                $data['classes'] = $classesList->map(function ($cls) use ($classSubjectsGrouped) {
+                    return [
+                        'id' => $cls->id,
+                        'grade_id' => $cls->grade_id,
+                        'section_id' => $cls->section_id,
+                        'class_teacher_id' => $cls->class_teacher_id,
+                        'default_classroom_id' => $cls->default_classroom_id,
+                        'school_id' => $cls->school_id,
+                        'grade' => ['id' => $cls->grade_id, 'name' => $cls->grade_name],
+                        'section' => ['id' => $cls->section_id, 'name' => $cls->section_name],
+                        'class_teacher' => ['id' => $cls->class_teacher_id, 'name' => $cls->teacher_name],
+                        'default_classroom' => ['id' => $cls->default_classroom_id, 'name' => $cls->classroom_name],
+                        'subjects' => isset($classSubjectsGrouped[$cls->id]) ? $classSubjectsGrouped[$cls->id]->values()->toArray() : [],
+                    ];
+                })->toArray();
             }
             if ($shouldLoad('subjects'))
                 $data['subjects'] = $school->subjects->toArray();
@@ -1113,5 +1380,83 @@ class SchoolController extends Controller
             $period->sort_order = $index + 1;
             $period->save();
         }
+    }
+
+    private function formatClassWithSubjects($schoolClass)
+    {
+        $schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']);
+        
+        $classSubjectIds = $schoolClass->subjects->map(function($sub) {
+            return $sub->pivot->id;
+        })->filter()->toArray();
+
+        $notes = \DB::table('class_subject_notes')
+            ->whereIn('class_subject_id', $classSubjectIds)
+            ->get()
+            ->groupBy('class_subject_id');
+
+        $syllabus = \DB::table('class_subject_syllabus')
+            ->whereIn('class_subject_id', $classSubjectIds)
+            ->get()
+            ->groupBy('class_subject_id');
+
+        $subjectsMapped = $schoolClass->subjects->map(function($sub) use ($notes, $syllabus) {
+            $pivotId = $sub->pivot->id;
+            
+            $subNotes = isset($notes[$pivotId])
+                ? $notes[$pivotId]->map(function($n) {
+                    return [
+                        'id' => $n->id,
+                        'class_subject_id' => $n->class_subject_id,
+                        'title' => $n->title,
+                        'file_url' => $n->file_url,
+                        'description' => $n->description,
+                        'created_at' => $n->created_at,
+                        'updated_at' => $n->updated_at,
+                    ];
+                })->toArray()
+                : [];
+
+            $subSyllabus = isset($syllabus[$pivotId])
+                ? $syllabus[$pivotId]->map(function($s) {
+                    return [
+                        'id' => $s->id,
+                        'class_subject_id' => $s->class_subject_id,
+                        'topic' => $s->topic,
+                        'description' => $s->description,
+                        'status' => $s->status,
+                        'created_at' => $s->created_at,
+                        'updated_at' => $s->updated_at,
+                    ];
+                })->toArray()
+                : [];
+
+            return [
+                'id' => $sub->id,
+                'name' => $sub->name,
+                'code' => $sub->code,
+                'pivot' => [
+                    'id' => $pivotId,
+                    'periods_per_week' => $sub->pivot->periods_per_week,
+                    'teacher_id' => $sub->pivot->teacher_id,
+                    'notes' => $subNotes,
+                    'syllabus' => $subSyllabus,
+                ]
+            ];
+        })->toArray();
+
+        return [
+            'id' => $schoolClass->id,
+            'grade_id' => $schoolClass->grade_id,
+            'section_id' => $schoolClass->section_id,
+            'class_teacher_id' => $schoolClass->class_teacher_id,
+            'default_classroom_id' => $schoolClass->default_classroom_id,
+            'school_id' => $schoolClass->school_id,
+            'grade' => $schoolClass->grade ? ['id' => $schoolClass->grade->id, 'name' => $schoolClass->grade->name] : null,
+            'section' => $schoolClass->section ? ['id' => $schoolClass->section->id, 'name' => $schoolClass->section->name] : null,
+            'class_teacher' => $schoolClass->classTeacher ? ['id' => $schoolClass->classTeacher->id, 'name' => $schoolClass->classTeacher->name] : null,
+            'default_classroom' => $schoolClass->defaultClassroom ? ['id' => $schoolClass->defaultClassroom->id, 'name' => $schoolClass->defaultClassroom->name] : null,
+            'subjects' => $subjectsMapped
+        ];
     }
 }

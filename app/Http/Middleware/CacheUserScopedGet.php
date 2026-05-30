@@ -27,6 +27,15 @@ class CacheUserScopedGet
         '/school/configuration'       => 200,
         '/school/notifications/counts'=> 200,
         '/school/check-availability'  => 200,
+        // Focused academic resource endpoints (called by the granular thunks)
+        '/school/grades'              => 200,
+        '/school/sections'            => 200,
+        '/school/classes'             => 200,
+        '/school/subjects-list'       => 200,
+        '/school/classrooms'          => 200,
+        '/school/teachers'            => 200,
+        '/school/events'              => 200,
+        '/school/periods'             => 200,
     ];
 
     private const BACKUP_TTL = 86400; // 24h fallback when DB explodes

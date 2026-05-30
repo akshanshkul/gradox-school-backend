@@ -133,6 +133,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/classes/batch-store', [SchoolController::class, 'batchStoreClasses']);
         Route::patch('/school/classes/{id}', [SchoolController::class, 'updateClass']);
         Route::post('/school/classes/{id}/subjects', [SchoolController::class, 'syncSubjects']);
+        Route::post('/school/classes/{classId}/subjects/{subjectId}/details', [SchoolController::class, 'updateClassSubjectDetails']);
+        Route::post('/school/classes/{classId}/subjects/{subjectId}/upload-note', [SchoolController::class, 'uploadSubjectNoteFile']);
         Route::delete('/school/classes/{id}', [SchoolController::class, 'deleteClass']);
 
         Route::delete('/school/subjects/{id}', [SchoolController::class, 'deleteSubject']);

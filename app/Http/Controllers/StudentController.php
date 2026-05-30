@@ -346,6 +346,10 @@ class StudentController extends Controller
             'currentRecord.schoolClass.grade',
             'currentRecord.schoolClass.section',
             'school:id,name,slug,logo_path,current_session',
+            // Documents are surfaced by the parent + student mobile apps under
+            // /(dashboard)/documents — eager load them with their type so the
+            // mobile UI renders the verified collection list.
+            'documents.type',
         ]);
 
         return $this->successResponse([
@@ -603,6 +607,14 @@ class StudentController extends Controller
         if (!$currentRecord || !$currentRecord->schoolClass) {
             return $this->errorResponse('Active academic record or class not found for current session', 404);
         }
+
+        // The `pivot` object on each subject is auto-populated by the
+        // belongsToMany relationship (includes periods_per_week, teacher_id).
+        // The student app currently only uses pivot.periods_per_week, so we
+        // do NOT call `->load('pivot.notes', ...)` here — `pivot` is not an
+        // Eloquent relationship and that call throws a 400. If the app ever
+        // needs notes/syllabus, fetch them via DB::table('class_subject_notes')
+        // keyed by pivot.id, the same pattern SchoolController::getData uses.
 
         return $this->successResponse($currentRecord->schoolClass->subjects, 'Subjects retrieved successfully');
     }
