@@ -77,7 +77,15 @@ class AuthController extends Controller
             'school_slug' => 'nullable|string|max:255',
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        $query = User::where('email', $request->email);
+
+        if ($request->filled('school_slug')) {
+            $query->whereHas('school', function ($q) use ($request) {
+                $q->where('slug', $request->school_slug);
+            });
+        }
+
+        $user = $query->first();
 
         if (!$user) {
             throw ValidationException::withMessages([

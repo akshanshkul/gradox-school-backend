@@ -8,36 +8,29 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Per-user response cache for read-heavy GET endpoints. Cuts MySQL connection
- * pressure on shared hosting by serving identical responses out of file cache
- * for a short TTL instead of round-tripping the DB on every page load.
+ * Per-user response cache for read-heavy GET endpoints with stale-while-error
+ * fallback. Cuts MySQL connection pressure on shared hosting by serving
+ * identical responses out of file cache instead of round-tripping the DB.
  *
- * Only acts on:
- *   - GET requests
- *   - Routes whose path matches the whitelist below
- *   - Authenticated requests (user-scoped cache key)
- *   - Successful 200 JSON responses
+ * Each cached entry is stored with a 24-hour backup TTL so that when the DB
+ * becomes unavailable (connection-per-hour cap, "too many connections", etc.)
+ * we still have something to serve instead of a 5xx page.
  *
- * Cache keys are namespaced by school_id so per-school invalidation through
- * ClearsSchoolCache cleanly drops cached responses when data changes.
- *
- * Skip entirely with header `X-Bypass-Cache: 1` or query param `?fresh=1`.
+ * Skip with header `X-Bypass-Cache: 1` or `?fresh=1`.
  */
 class CacheUserScopedGet
 {
-    /**
-     * URL substrings that are eligible for caching. We use simple contains
-     * checks (instead of full route matching) so the middleware is purely
-     * additive — no existing route file needs to change.
-     */
+    /** URL substring => "fresh" TTL in seconds. Backup TTL is always 24h. */
     private const CACHEABLE = [
-        '/school/bootstrap'           => 200,   // entire bootstrap blob
-        '/school/data'                => 200,   // school config
-        '/school/configuration'       => 200,  // rarely changes
+        '/school/bootstrap'           => 200,
+        '/school/data'                => 200,
+        '/school/configuration'       => 200,
         '/school/config'              => 200,
-        '/school/notifications/counts'=> 200,   // bell badge counter
+        '/school/notifications/counts'=> 200,
         '/school/check-availability'  => 200,
     ];
+
+    private const BACKUP_TTL = 86400; // 24h fallback when DB explodes
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -45,8 +38,8 @@ class CacheUserScopedGet
             return $next($request);
         }
 
-        $ttl = $this->cacheableTtl($request);
-        if ($ttl === null) {
+        $freshTtl = $this->cacheableTtl($request);
+        if ($freshTtl === null) {
             return $next($request);
         }
 
@@ -57,14 +50,23 @@ class CacheUserScopedGet
 
         $cacheKey = $this->keyFor($request, $user);
         $cached = SafeCache::get($cacheKey);
-        if ($cached !== null && is_array($cached) && isset($cached['body'], $cached['status'])) {
-            return response($cached['body'], $cached['status'])
-                ->header('Content-Type', $cached['content_type'] ?? 'application/json')
-                ->header('X-Cache', 'HIT')
-                ->header('X-Cache-Key', substr($cacheKey, 0, 60));
+
+        // Fresh hit — serve directly without touching the DB.
+        if ($this->isFresh($cached, $freshTtl)) {
+            return $this->respondFromCache($cached, 'HIT', $cacheKey);
         }
 
-        $response = $next($request);
+        // Run the real handler, but be ready to fall back to a stale cached
+        // copy if the DB rejects the connection (1226, 1040, 2002, 2006…).
+        try {
+            $response = $next($request);
+        } catch (\Throwable $e) {
+            if ($cached && $this->isDbConnectionError($e)) {
+                return $this->respondFromCache($cached, 'STALE-FALLBACK', $cacheKey)
+                    ->header('X-DB-Error', '1');
+            }
+            throw $e;
+        }
 
         if ($this->isCacheable($response)) {
             try {
@@ -72,19 +74,19 @@ class CacheUserScopedGet
                     'body' => $response->getContent(),
                     'status' => $response->getStatusCode(),
                     'content_type' => $response->headers->get('Content-Type', 'application/json'),
+                    'created_at' => now()->timestamp,
                 ];
-                SafeCache::put($cacheKey, $payload, $ttl);
+                SafeCache::put($cacheKey, $payload, self::BACKUP_TTL);
 
-                // Tag this key under per-school index so invalidation can drop the whole group.
                 $schoolId = $user->school_id ?? null;
                 if ($schoolId) {
-                    SafeCache::indexUnder("school_{$schoolId}_url_cache", $cacheKey, $ttl);
+                    SafeCache::indexUnder("school_{$schoolId}_url_cache", $cacheKey, self::BACKUP_TTL);
                 }
 
                 $response->headers->set('X-Cache', 'MISS');
-                $response->headers->set('X-Cache-TTL', (string) $ttl);
+                $response->headers->set('X-Cache-TTL', (string) $freshTtl);
             } catch (\Throwable $e) {
-                // never fail a request because caching couldn't store
+                // Never fail a request because caching couldn't store.
             }
         }
 
@@ -117,6 +119,61 @@ class CacheUserScopedGet
         if (!str_contains($contentType, 'json')) return false;
         if ($response->headers->has('Set-Cookie')) return false;
         return true;
+    }
+
+    private function isFresh($cached, int $freshTtl): bool
+    {
+        if (!is_array($cached) || !isset($cached['body'], $cached['created_at'])) return false;
+        return (now()->timestamp - (int) $cached['created_at']) <= $freshTtl;
+    }
+
+    private function respondFromCache(array $cached, string $tag, string $cacheKey): Response
+    {
+        return response($cached['body'], $cached['status'] ?? 200)
+            ->header('Content-Type', $cached['content_type'] ?? 'application/json')
+            ->header('X-Cache', $tag)
+            ->header('X-Cache-Age', (string) (now()->timestamp - ($cached['created_at'] ?? now()->timestamp)))
+            ->header('X-Cache-Key', substr($cacheKey, 0, 60));
+    }
+
+    /**
+     * MySQL / PDO error codes that mean "the DB can't accept this request right now".
+     * Treat them all as "serve stale if you have it".
+     */
+    private function isDbConnectionError(\Throwable $e): bool
+    {
+        if ($e instanceof \PDOException || $e instanceof \Illuminate\Database\QueryException) {
+            $code = (string) ($e->getCode() ?: '');
+            $msg = strtolower($e->getMessage());
+
+            $hits = [
+                '1226', // ER_USER_LIMIT_REACHED (max_connections_per_hour)
+                '1040', // ER_CON_COUNT_ERROR (too many connections)
+                '2002', // CR_CONNECTION_ERROR (can't connect)
+                '2006', // CR_SERVER_GONE_ERROR (server gone away)
+                '2013', // CR_SERVER_LOST
+                'HY000',
+            ];
+
+            foreach ($hits as $needle) {
+                if (str_contains($code, $needle) || str_contains($msg, strtolower($needle))) {
+                    return true;
+                }
+            }
+
+            $phrases = [
+                'max_connections_per_hour',
+                'has exceeded the',
+                'too many connections',
+                'connection refused',
+                'server has gone away',
+                'lost connection',
+            ];
+            foreach ($phrases as $phrase) {
+                if (str_contains($msg, $phrase)) return true;
+            }
+        }
+        return false;
     }
 
     private function keyFor(Request $request, $user): string

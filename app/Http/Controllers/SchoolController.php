@@ -23,7 +23,13 @@ class SchoolController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email',
+            'email' => [
+                'required',
+                'email',
+                \Illuminate\Validation\Rule::unique('users', 'email')->where(function ($query) use ($request) {
+                    return $query->where('school_id', $request->user()->school_id);
+                }),
+            ],
             'password' => 'required|string|min:8',
             'role_id' => 'required_without:role|exists:roles,id',
             'role' => 'required_without:role_id|string',
