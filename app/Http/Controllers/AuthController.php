@@ -60,7 +60,7 @@ class AuthController extends Controller
                     'role_relation',
                     'managedClasses' => function ($q) {
                         $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
-                          ->with(['grade:id,name', 'section:id,name']);
+                            ->with(['grade:id,name', 'section:id,name']);
                     }
                 ]),
                 'access_token' => $token,
@@ -133,7 +133,7 @@ class AuthController extends Controller
                 'role_relation',
                 'managedClasses' => function ($q) {
                     $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
-                      ->with(['grade:id,name', 'section:id,name']);
+                        ->with(['grade:id,name', 'section:id,name']);
                 }
             ]),
             'access_token' => $token,
@@ -157,7 +157,7 @@ class AuthController extends Controller
                 'role_relation',
                 'managedClasses' => function ($q) {
                     $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
-                      ->with(['grade:id,name', 'section:id,name']);
+                        ->with(['grade:id,name', 'section:id,name']);
                 }
             ])
         );
@@ -167,7 +167,7 @@ class AuthController extends Controller
     {
         $resources = ['academic', 'students', 'timetable', 'staff', 'system', 'blogs', 'courses', 'reports'];
         $actions = ['read', 'create', 'update', 'delete', 'export', 'import', 'publish', 'approve', 'archive', 'reject', 'restore'];
-        
+
         $perms = [];
         foreach ($resources as $res) {
             foreach ($actions as $act) {

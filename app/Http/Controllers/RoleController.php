@@ -26,7 +26,7 @@ class RoleController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
-            'permissions' => 'required|array',
+            'permissions' => 'present|array',
         ]);
 
         $role = Role::create([
@@ -50,7 +50,7 @@ class RoleController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
-            'permissions' => 'required|array',
+            'permissions' => 'present|array',
         ]);
 
         $role->update([

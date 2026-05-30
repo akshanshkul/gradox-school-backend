@@ -25,7 +25,6 @@ class CacheUserScopedGet
         '/school/bootstrap'           => 200,
         '/school/data'                => 200,
         '/school/configuration'       => 200,
-        '/school/config'              => 200,
         '/school/notifications/counts'=> 200,
         '/school/check-availability'  => 200,
     ];

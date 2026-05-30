@@ -118,9 +118,18 @@ class SchoolController extends Controller
             'address' => 'sometimes|nullable|string|max:500',
             'plan_name' => 'sometimes|nullable|string|max:64',
             'grace_days' => 'sometimes|integer|min:0|max:365',
+            'latitude' => 'sometimes|nullable|numeric',
+            'longitude' => 'sometimes|nullable|numeric',
+            'geofence_radius' => 'sometimes|nullable|integer|min:0',
         ]);
 
         $school->update($data);
+
+        try {
+            \App\Services\SafeCache::forgetPrefix("school_{$school->id}_url_cache");
+        } catch (\Throwable $e) {
+            // best effort
+        }
 
         $this->audit->log(
             $request->user()->id,

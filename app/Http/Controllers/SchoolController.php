@@ -107,10 +107,10 @@ class SchoolController extends Controller
                 $request->user()->school->classes()
                     ->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id', 'school_id')
                     ->with([
-                        'grade:id,name', 
-                        'section:id,name', 
-                        'classTeacher:id,name', 
-                        'defaultClassroom:id,name', 
+                        'grade:id,name',
+                        'section:id,name',
+                        'classTeacher:id,name',
+                        'defaultClassroom:id,name',
                         'subjects:id,name'
                     ])
                     ->get()
@@ -206,7 +206,8 @@ class SchoolController extends Controller
                     'type' => 'success',
                     'data' => ['type' => 'class_assigned', 'class_id' => $schoolClass->id]
                 ]);
-            } catch (\Exception $e) {}
+            } catch (\Exception $e) {
+            }
         }
 
         return $this->successResponse($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom']), 'Class mapping created successfully');
@@ -246,7 +247,8 @@ class SchoolController extends Controller
                     'type' => 'success',
                     'data' => ['type' => 'class_assigned', 'class_id' => $schoolClass->id]
                 ]);
-            } catch (\Exception $e) {}
+            } catch (\Exception $e) {
+            }
         }
 
         return $this->successResponse($schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']), 'Class configuration updated successfully');
@@ -527,7 +529,7 @@ class SchoolController extends Controller
 
         try {
             \Illuminate\Support\Facades\Mail::to($staff->email)->send(new \App\Mail\StaffPasswordResetMail($staff, $newPassword));
-            
+
             // App Notification
             \App\Models\Notification::create([
                 'school_id' => $staff->school_id,
@@ -583,16 +585,16 @@ class SchoolController extends Controller
         $shouldLoad = fn($key) => !$requestedKeys || in_array($key, $requestedKeys);
 
         $data = [];
-        
+
         if ($shouldLoad('sections'))
             $data['sections'] = Section::where('school_id', $schoolId)->orderBy('name')->get();
-            
+
         if ($shouldLoad('subjects'))
             $data['subjects'] = Subject::where('school_id', $schoolId)->orderBy('name')->get();
-            
+
         if ($shouldLoad('classrooms'))
             $data['classrooms'] = Classroom::where('school_id', $schoolId)->orderBy('name')->get();
-            
+
         if ($shouldLoad('periods'))
             $data['periods'] = SchoolPeriod::where('school_id', $schoolId)
                 ->orderBy('start_time')
@@ -695,7 +697,7 @@ class SchoolController extends Controller
                         'classrooms.name as classroom_name'
                     )
                     ->get()
-                    ->map(function($cls) {
+                    ->map(function ($cls) {
                         // Reconstruct the nested structure the frontend expects
                         return [
                             'id' => $cls->id,
@@ -758,6 +760,9 @@ class SchoolController extends Controller
             'email_settings' => 'nullable|string',
             'current_session' => 'nullable|string',
             'onboarding_steps' => 'nullable|string',
+            'latitude' => 'nullable|numeric',
+            'longitude' => 'nullable|numeric',
+            'geofence_radius' => 'nullable|integer|min:0',
         ]);
 
         $logoPath = $school->logo_path;
@@ -800,7 +805,16 @@ class SchoolController extends Controller
             'email_settings' => $emailSettings,
             'current_session' => $request->current_session,
             'onboarding_steps' => $request->has('onboarding_steps') ? json_decode($request->onboarding_steps, true) : $school->onboarding_steps,
+            'latitude' => $request->has('latitude') ? $request->latitude : $school->latitude,
+            'longitude' => $request->has('longitude') ? $request->longitude : $school->longitude,
+            'geofence_radius' => $request->has('geofence_radius') ? $request->geofence_radius : $school->geofence_radius,
         ]);
+
+        try {
+            \App\Services\SafeCache::forgetPrefix("school_{$school->id}_url_cache");
+        } catch (\Throwable $e) {
+            // best effort
+        }
 
         return $this->successResponse($school, 'Institutional settings updated successfully');
     }
@@ -1016,6 +1030,9 @@ class SchoolController extends Controller
             'address' => $school->address,
             'contact_number' => $school->contact_number,
             'registration_no' => $school->registration_no,
+            'latitude' => $school->latitude,
+            'longitude' => $school->longitude,
+            'geofence_radius' => $school->geofence_radius,
         ]);
     }
 
