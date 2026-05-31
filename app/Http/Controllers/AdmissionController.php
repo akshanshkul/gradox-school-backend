@@ -181,8 +181,18 @@ class AdmissionController extends Controller
             ->where('school_id', $request->user()->school_id)
             ->firstOrFail();
 
+        $schoolId = $request->user()->school_id;
+
         $request->validate([
-            'admission_number' => 'required|string|unique:students,admission_number',
+            'admission_number' => [
+                'required', 'string',
+                // School-scoped uniqueness — matches the DB constraint
+                // `unique(['school_id', 'admission_number'])`. Without this
+                // scope another school's identical admission number would
+                // wrongly block this school's submission.
+                \Illuminate\Validation\Rule::unique('students', 'admission_number')
+                    ->where(fn($q) => $q->where('school_id', $schoolId)),
+            ],
             'aadhaar_number' => 'required|string|size:12',
             'school_class_id' => 'required|exists:school_classes,id',
             'roll_number' => 'nullable|string',
@@ -222,7 +232,11 @@ class AdmissionController extends Controller
             ]);
 
             // 3. Create Login Account
+            // school_id is now part of the composite unique on student_logins so
+            // each tenant can issue the same admission_number / email without
+            // collisions across schools.
             $student->login()->create([
+                'school_id' => $student->school_id,
                 'admission_number' => $student->admission_number,
                 'email' => $student->email,
                 'password' => bcrypt(str_replace('-', '', $student->date_of_birth)), // YYYYMMDD

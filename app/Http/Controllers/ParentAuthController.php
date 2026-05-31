@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\ParentLoginOtpMail;
 use App\Models\CommonOtp;
+use App\Models\School;
 use App\Models\Student;
 use App\Models\StudentLogin;
 use Illuminate\Http\Request;
@@ -43,13 +45,26 @@ class ParentAuthController extends Controller
             ]
         );
 
-        // Send Email (Using a generic layout or just a simple mail)
+        // Resolve the school this parent is linked to (for branded subject + sender).
+        // We pick the first matching student's school; if the parent has children in
+        // multiple schools we still use whichever is found first — the OTP itself is
+        // the parent's identity, not school-scoped.
+        $schoolId = \DB::table('students')
+            ->where(function ($q) use ($email) {
+                $q->where('parent_email', 'like', '%' . $email . '%')
+                  ->orWhere('email', $email);
+            })
+            ->value('school_id');
+        $school = $schoolId ? School::find($schoolId) : null;
+
+        // Send Email using the branded ParentLoginOtpMail (per-school sender name).
         try {
-            Mail::raw("Your OTP for Parent Login is: {$otp}. It is valid for 10 minutes.", function ($message) use ($email) {
-                $message->to($email)->subject('Parent Login OTP');
-            });
+            Mail::to($email)->send(new ParentLoginOtpMail((string) $otp, $school, 10));
         } catch (\Exception $e) {
-            // In a production environment, you might want to log this error
+            \Illuminate\Support\Facades\Log::error('Parent OTP send failed', [
+                'email' => $email,
+                'error' => $e->getMessage(),
+            ]);
             return $this->errorResponse('Failed to send OTP email. Please try again later.', 500);
         }
 

@@ -60,7 +60,13 @@ class StudentController extends Controller
             });
         }
 
-        return $this->successResponse($query->paginate(20));
+        $perPage = (int) $request->input('per_page', 20);
+        // Clamp so a malicious / broken client can't drag the whole table in
+        // one shot, and so the smallest selectable page is still useful.
+        if ($perPage < 10) $perPage = 10;
+        if ($perPage > 200) $perPage = 200;
+
+        return $this->successResponse($query->paginate($perPage));
     }
 
     public function store(Request $request)
@@ -98,8 +104,9 @@ class StudentController extends Controller
                 'status' => 'active'
             ]);
 
-            // Create Login
+            // Create Login (school_id required for the per-school unique constraint)
             $student->login()->create([
+                'school_id' => $student->school_id,
                 'admission_number' => $student->admission_number,
                 'email' => $student->email,
                 'password' => bcrypt(str_replace('-', '', $student->date_of_birth->format('Y-m-d')))

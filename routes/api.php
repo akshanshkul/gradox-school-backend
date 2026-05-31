@@ -111,6 +111,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/school/inquiries', [InquiryController::class, 'index']);
         Route::patch('/school/inquiries/{id}/status', [InquiryController::class, 'updateStatus']);
 
+        // ---- Bulk Student Import (browser-side validate, staged commit) ----
+        Route::get('/school/imports/template', [\App\Http\Controllers\StudentImportController::class, 'template']);
+        Route::get('/school/imports/existing-master', [\App\Http\Controllers\StudentImportController::class, 'existingMaster']);
+        Route::post('/school/imports/materialize-master', [\App\Http\Controllers\StudentImportController::class, 'materializeMaster']);
+        Route::post('/school/imports/commit', [\App\Http\Controllers\StudentImportController::class, 'commit']);
+
         // Session Management
         Route::get('/school/sessions', [SessionController::class, 'index']);
         Route::post('/school/sessions', [SessionController::class, 'store']);

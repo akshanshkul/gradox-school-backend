@@ -108,8 +108,11 @@ return [
     */
 
     'from' => [
-        'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
-        'name' => env('MAIL_FROM_NAME', 'Example'),
+        'address' => env('MAIL_FROM_ADDRESS', 'no-reply@gradox.in'),
+        // Default sender name. Per-mail Mailables can override this via
+        // ->from(address, name) to use a specific school's name when the
+        // mail is school-scoped (welcome teacher, parent OTP, etc.).
+        'name' => env('MAIL_FROM_NAME', 'GradoX'),
     ],
 
     /*

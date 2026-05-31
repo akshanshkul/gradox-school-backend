@@ -27,7 +27,9 @@ class StudentPasswordResetMail extends Mailable
      */
     public function build()
     {
-        return $this->subject('Your Password Reset OTP')
+        return $this
+                    ->from(config('mail.from.address'), 'GradoX')
+                    ->subject('Your Password Reset OTP')
                     ->html("
                         <div style='font-family: Arial, sans-serif; padding: 20px; color: #333;'>
                             <h2 style='color: #4f46e5;'>Password Reset Request</h2>

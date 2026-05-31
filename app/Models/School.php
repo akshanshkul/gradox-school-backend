@@ -127,23 +127,53 @@ class School extends Model
 
     /**
      * Get the currently active academic session.
-     * Fallback: Auto-creates a default session if none exists.
+     *
+     * Fallback: if no session is active, prefer activating an existing
+     * inactive session that matches the current academic year *canonically*
+     * — "2026-27" and "2026-2027" are the same year — and only create a
+     * brand-new row when nothing matches. Without this guard, every page
+     * that called this method after the admin deactivated all sessions
+     * would silently spawn a duplicate "YYYY-YY" row.
      */
     public function getActiveSession()
     {
         $active = $this->sessions()->where('is_active', true)->first();
+        if ($active) return $active;
 
-        if (!$active) {
-            $year = date('Y');
-            $nextYear = date('y', strtotime('+1 year'));
-            $active = $this->sessions()->create([
-                'name' => $year . '-' . $nextYear,
-                'start_date' => $year . '-04-01',
-                'end_date' => (date('Y') + 1) . '-03-31',
-                'is_active' => true
-            ]);
+        $year = (int) date('Y');
+        $wantName = $year . '-' . substr((string) ($year + 1), -2); // e.g. "2026-27"
+        $wantKey = $year . '-' . ($year + 1); // canonical "2026-2027"
+
+        // Look for an existing session for this same canonical year.
+        foreach ($this->sessions()->get() as $s) {
+            if ($this->canonicalYearKey((string) $s->name) === $wantKey) {
+                $s->update(['is_active' => true]);
+                return $s;
+            }
         }
 
-        return $active;
+        return $this->sessions()->create([
+            'name' => $wantName,
+            'start_date' => $year . '-04-01',
+            'end_date' => ($year + 1) . '-03-31',
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Mirrors StudentImportController::sessionKey so getActiveSession and
+     * the bulk importer agree on what counts as "the same year".
+     */
+    private function canonicalYearKey(string $name): string
+    {
+        $name = trim($name);
+        if ($name === '') return '';
+        if (preg_match('/(\d{2,4})\D+(\d{2,4})/', $name, $m)) {
+            $a = (int) $m[1]; $b = (int) $m[2];
+            if ($a < 100) $a += 2000;
+            if ($b < 100) $b += ($b < $a % 100 ? 2100 : 2000);
+            return $a . '-' . $b;
+        }
+        return strtolower(preg_replace('/\s+/', '', $name));
     }
 }

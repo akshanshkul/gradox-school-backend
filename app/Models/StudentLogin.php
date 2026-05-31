@@ -14,6 +14,7 @@ class StudentLogin extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
+        'school_id',
         'student_id',
         'admission_number',
         'email',
