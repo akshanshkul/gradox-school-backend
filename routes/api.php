@@ -36,6 +36,17 @@ use App\Http\Controllers\Teacher\HomeworkController as TeacherHomeworkController
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
+// Self-serve password reset for staff (teachers, admins, incharges).
+// Same three-step OTP flow the student app uses, but operates on the
+// `users` table via App\Http\Controllers\StaffPasswordController.
+// Rate-limited because the OTP step sends real emails and the verify
+// step is brute-force adjacent (6-digit code).
+Route::middleware('throttle:10,1')->group(function () {
+    Route::post('/staff/forgot-password', [\App\Http\Controllers\StaffPasswordController::class, 'requestReset']);
+    Route::post('/staff/verify-otp',       [\App\Http\Controllers\StaffPasswordController::class, 'verifyOtp']);
+    Route::post('/staff/reset-password',   [\App\Http\Controllers\StaffPasswordController::class, 'reset']);
+});
+
 // Public Landing Pages & Inquiries
 Route::get('/school/public', [SchoolController::class, 'getPublicSchoolInfo']);
 Route::get('/schools/search', [SchoolController::class, 'searchSchools']);
@@ -46,11 +57,35 @@ Route::post('/inquiries', [InquiryController::class, 'store']);
 Route::post('/demo-request', [InquiryController::class, 'storeDemoRequest']);
 Route::post('/admissions', [AdmissionController::class, 'store']);
 
+// Impersonation handoff exchange — PUBLIC (no auth) but single-use and
+// short-lived. The school frontend POSTs the handoff code it received via
+// the platform-admin redirect and gets back the real Sanctum token.
+// Throttle protects against brute-forcing the random handoff code.
+Route::middleware('throttle:30,1')->post(
+    '/impersonation/exchange',
+    [\App\Http\Controllers\Platform\ImpersonationController::class, 'exchange']
+);
+
 
 // teacher and admin
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', [AuthController::class, 'me']);
+
+    // School-side plan/usage snapshot — feeds the usage banner and the
+    // upgrade modal. Always returns the caller's school, no cross-tenant
+    // hint accepted.
+    Route::get('/school/usage', [\App\Http\Controllers\SchoolUsageController::class, 'show']);
+    Route::post('/school/upgrade-request', [\App\Http\Controllers\SchoolUsageController::class, 'requestUpgrade']);
+
+    // Module access — both endpoints are read-only and intentionally
+    // outside the module middleware (you must always be able to
+    // discover your own access level, even on modules that are off).
+    Route::get('/school/modules',      [\App\Http\Controllers\SchoolModuleController::class, 'show']);
+    Route::get('/school/access-check', [\App\Http\Controllers\SchoolModuleController::class, 'check']);
+    // "Stop impersonating" — uses the school-side Sanctum auth (the
+    // impersonation token IS a school-side token) and revokes itself.
+    Route::post('/impersonation/exit', [\App\Http\Controllers\Platform\ImpersonationController::class, 'exit']);
     Route::get('/school/bootstrap', [SchoolController::class, 'getBootstrapData']);
     Route::get('/school/configuration', [SchoolController::class, 'getConfiguration']);
     Route::get('/school/config', [SchoolController::class, 'getConfig']);
@@ -70,9 +105,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/examination/terms', [ExamConfigurationController::class, 'storeTerm']);
         Route::post('/school/examination/types', [ExamConfigurationController::class, 'storeType']);
         Route::post('/school/examination/grading-scales', [ExamConfigurationController::class, 'storeGradingScale']);
+        Route::delete('/school/examination/terms/{id}', [ExamConfigurationController::class, 'destroyTerm']);
+        Route::delete('/school/examination/types/{id}', [ExamConfigurationController::class, 'destroyType']);
+        Route::delete('/school/examination/grading-scales/{id}', [ExamConfigurationController::class, 'destroyGradingScale']);
         Route::post('/school/examination/structures', [ExamConfigurationController::class, 'storeStructure']);
         Route::post('/school/examination/structures/batch', [ExamConfigurationController::class, 'storeStructureBatch']);
         Route::post('/school/examination/structures/clone', [ExamConfigurationController::class, 'cloneStructure']);
+        // Two publish-toggle routes that the ExamStructures.tsx UI buttons were
+        // already calling — the controller methods existed but were never
+        // registered, so every "Publish/Hide" click was 404ing silently.
+        Route::patch('/school/examination/structures/batch-publication', [ExamConfigurationController::class, 'batchTogglePublication']);
+        Route::patch('/school/examination/structures/{id}/toggle-publication', [ExamConfigurationController::class, 'togglePublication']);
 
         Route::get('/school/examination/promotion-roster', [AcademicPromotionController::class, 'getPromotionRoster']);
         Route::post('/school/examination/promote', [AcademicPromotionController::class, 'promote']);
@@ -106,6 +149,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/students', [StudentController::class, 'store']);
         Route::patch('/school/students/{id}', [StudentController::class, 'update']);
         Route::delete('/school/students/{id}', [StudentController::class, 'destroy']);
+        // Dedicated multipart endpoint — separate from update() so a
+        // photo change doesn't drag along every validation rule of the
+        // edit-profile form. See StudentController::updatePhoto for
+        // the auth gates (admin OR class teacher).
+        Route::post('/school/students/{id}/photo', [StudentController::class, 'updatePhoto']);
 
         // Inquiries for Admin - status changes
         Route::get('/school/inquiries', [InquiryController::class, 'index']);
@@ -128,6 +176,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/school/teachers/{id}', [SchoolController::class, 'deleteTeacher']);
         Route::post('/school/teachers/{id}/reset-password', [SchoolController::class, 'resetStaffPassword']);
         Route::patch('/school/teachers/{id}/details', [SchoolController::class, 'updateTeacherDetails']);
+        // Active class assignments derived from class_subject pivot.
+        // Read-only; feeds the "Currently Teaching" subsection on
+        // the staff profile that sits beside Specializations.
+        Route::get('/school/teachers/{id}/teaching-assignments', [SchoolController::class, 'getTeachingAssignments']);
 
         Route::post('/school/grades', [SchoolController::class, 'addGrade']);
         Route::delete('/school/grades/{id}', [SchoolController::class, 'deleteGrade']);
@@ -180,23 +232,33 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/school/substitutions', [SubstitutionController::class, 'store']);
         Route::delete('/school/substitutions/{id}', [SubstitutionController::class, 'destroy']);
 
-        // CMS / Landing Page Management
-        Route::get('/school/cms', [LandingPageController::class, 'getCMSData']);
-        Route::post('/school/cms/banners', [LandingPageController::class, 'addBanner']);
-        Route::delete('/school/cms/banners/{id}', [LandingPageController::class, 'deleteBanner']);
+        // CMS / Landing Page Management — gated by the
+        // `landing_page_widgets` module. When a school's plan or
+        // override disables this module, every admin-side request to
+        // configure the landing page returns 403 with structured
+        // error_code: MODULE_NOT_IN_PLAN. The school admin's SPA
+        // catches that and hides the nav item / blocks the route.
+        Route::middleware('module:landing_page_widgets')->group(function () {
+            Route::get('/school/cms', [LandingPageController::class, 'getCMSData']);
+            Route::post('/school/cms/banners', [LandingPageController::class, 'addBanner']);
+            Route::delete('/school/cms/banners/{id}', [LandingPageController::class, 'deleteBanner']);
 
-        Route::prefix('school/landing/sections')->group(function () {
-            Route::post('/', [LandingPageController::class, 'addSection']);
-            Route::put('/{id}', [LandingPageController::class, 'updateSection']);
-            Route::post('/reorder', [LandingPageController::class, 'reorderSections']);
-            Route::delete('/{id}', [LandingPageController::class, 'deleteSection']);
-            Route::post('/{sectionId}/cards', [LandingPageController::class, 'addSectionCard']);
-            Route::delete('/{sectionId}/cards/{cardId}', [LandingPageController::class, 'deleteSectionCard']);
+            Route::prefix('school/landing/sections')->group(function () {
+                Route::post('/', [LandingPageController::class, 'addSection']);
+                Route::put('/{id}', [LandingPageController::class, 'updateSection']);
+                Route::post('/reorder', [LandingPageController::class, 'reorderSections']);
+                Route::delete('/{id}', [LandingPageController::class, 'deleteSection']);
+                Route::post('/{sectionId}/cards', [LandingPageController::class, 'addSectionCard']);
+                Route::delete('/{sectionId}/cards/{cardId}', [LandingPageController::class, 'deleteSectionCard']);
+            });
         });
 
         // Email Templates Studio
         Route::get('/school/templates', [EmailTemplateController::class, 'index']);
         Route::patch('/school/templates/{slug}', [EmailTemplateController::class, 'update']);
+        // Deleting "resets" the school's customization back to the system default;
+        // the system row (school_id=null) is never deleted.
+        Route::delete('/school/templates/{slug}', [EmailTemplateController::class, 'destroy']);
 
         // Timetable Scheduling Data API
         Route::get('/school/timetable-scheduling-data', [TimetableSchedulingController::class, 'getTimetableSchedulingData']);
@@ -228,6 +290,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Fees Management (Admin/Accountant)
         Route::prefix('school/fees')->group(function () {
             Route::get('/transactions', [FeePaymentController::class, 'index']);
+            Route::get('/razorpay-transactions', [FeePaymentController::class, 'razorpayIndex']);
+            Route::get('/receipts/{feePaymentId}', [FeePaymentController::class, 'receiptShow']);
             Route::post('/payment', [FeePaymentController::class, 'store']);
             Route::apiResource('types', FeeTypeController::class);
             Route::apiResource('assignments', FeeAssignmentController::class);
@@ -279,7 +343,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/students/teachers/{id}', [StudentController::class, 'getTeacherProfile']);
     Route::get('/students/circulars', [CircularController::class, 'studentIndex']);
     Route::get('/students/attendance/report', [StudentAttendanceController::class, 'getPersonalReport']);
+    // Lightweight 2-number snapshot driving the dashboard's circular
+    // progress rings (Overall Score + Attendance). Replaces hardcoded
+    // 85 / 92 literals in the React Native code.
+    Route::get('/students/performance', [StudentController::class, 'performance']);
     Route::get('/students/results', [StudentController::class, 'getResults']);
+    // Student-facing homework feed — returns BOTH homework (day-wise,
+    // text-only) and assignments (due-date, PDF submission). The app
+    // splits them into tabs client-side. Each row includes the
+    // current student's own submission (if any) for assignments.
+    Route::get('/students/homework', [StudentController::class, 'homework']);
+
+    // Student assignment submissions — PDF upload + get my own.
+    Route::post('/students/assignments/{id}/submit',     [\App\Http\Controllers\Student\AssignmentSubmissionController::class, 'submit']);
+    Route::get ('/students/assignments/{id}/submission', [\App\Http\Controllers\Student\AssignmentSubmissionController::class, 'show']);
 
     // Notifications & Device Tokens
     Route::post('/students/device-token', [StudentController::class, 'updateDeviceToken']);
@@ -312,9 +389,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/notifications/stats', [NotificationController::class, 'getStats']);
     Route::post('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
 
-    // Homework
-    Route::get('/teacher/homework', [TeacherHomeworkController::class, 'index']);
-    Route::post('/teacher/homework', [TeacherHomeworkController::class, 'store']);
+    // Homework — full CRUD for teachers / admins. show / update / destroy
+    // were missing before, which meant a teacher could create homework
+    // but never edit or delete it from the teacher app.
+    Route::get   ('/teacher/homework/options', [TeacherHomeworkController::class, 'options']);
+    Route::get   ('/teacher/homework',      [TeacherHomeworkController::class, 'index']);
+    Route::post  ('/teacher/homework',      [TeacherHomeworkController::class, 'store']);
+    Route::get   ('/teacher/homework/{id}', [TeacherHomeworkController::class, 'show']);
+    Route::patch ('/teacher/homework/{id}', [TeacherHomeworkController::class, 'update']);
+    Route::delete('/teacher/homework/{id}', [TeacherHomeworkController::class, 'destroy']);
+    // Assignment submission management — list every student's
+    // submission state for one assignment, then grade individual rows.
+    Route::get   ('/teacher/homework/{id}/submissions',  [TeacherHomeworkController::class, 'submissions']);
+    Route::patch ('/teacher/submissions/{submissionId}', [TeacherHomeworkController::class, 'gradeSubmission']);
 });
 
 Route::post('/webhooks/razorpay', [\App\Http\Controllers\API\WebhookController::class, 'handleRazorpay']);

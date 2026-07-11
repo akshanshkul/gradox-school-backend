@@ -10,9 +10,17 @@ use App\Models\GradingScale;
 use App\Models\ExamStructure;
 use App\Models\ExamStructureComponent;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ExamConfigurationController extends Controller
 {
+    /** Reusable: school-scoped exists rule. Centralised so the pattern can't
+     *  drift between methods. NOTE the return type — Rule::exists() returns
+     *  an Illuminate\Validation\Rules\Exists instance, not the Rule facade. */
+    private function scoped(string $table, int $schoolId, string $col = 'school_id'): \Illuminate\Validation\Rules\Exists
+    {
+        return Rule::exists($table, 'id')->where(fn($q) => $q->where($col, $schoolId));
+    }
     public function getTerms(Request $request)
     {
         $terms = ExamTerm::where('school_id', $request->user()->school_id)
@@ -24,14 +32,15 @@ class ExamConfigurationController extends Controller
 
     public function storeTerm(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'session_id' => 'required|exists:sessions,id',
+            'session_id' => ['required', $this->scoped('sessions', $schoolId)],
             'name' => 'required|string|max:255',
             'weightage' => 'required|numeric|min:0|max:100',
             'is_active' => 'boolean'
         ]);
 
-        $validated['school_id'] = $request->user()->school_id;
+        $validated['school_id'] = $schoolId;
         $term = ExamTerm::create($validated);
 
         return response()->json(['success' => true, 'message' => 'Exam term created successfully', 'data' => $term]);
@@ -98,14 +107,15 @@ class ExamConfigurationController extends Controller
 
     public function storeStructure(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'exam_term_id' => 'required|exists:exam_terms,id',
-            'exam_type_id' => 'required|exists:exam_types,id',
-            'school_class_id' => 'required|exists:school_classes,id',
-            'subject_id' => 'required|exists:subjects,id',
-            'scoring_type' => 'required|in:marks,grade',
-            'passing_marks' => 'required|integer',
-            'components' => 'required|array|min:1',
+            'exam_term_id'    => ['required', $this->scoped('exam_terms', $schoolId)],
+            'exam_type_id'    => ['required', $this->scoped('exam_types', $schoolId)],
+            'school_class_id' => ['required', $this->scoped('school_classes', $schoolId)],
+            'subject_id'      => ['required', $this->scoped('subjects', $schoolId)],
+            'scoring_type'    => 'required|in:marks,grade',
+            'passing_marks'   => 'required|integer',
+            'components'      => 'required|array|min:1',
             'components.*.name' => 'required|string',
             'components.*.max_marks' => 'required|integer|min:1'
         ]);
@@ -136,15 +146,16 @@ class ExamConfigurationController extends Controller
 
     public function storeStructureBatch(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'exam_term_id' => 'required|exists:exam_terms,id',
-            'exam_type_id' => 'required|exists:exam_types,id',
-            'school_class_id' => 'required|exists:school_classes,id',
-            'subject_ids' => 'required|array|min:1',
-            'subject_ids.*' => 'required|exists:subjects,id',
-            'scoring_type' => 'required|in:marks,grade',
-            'passing_marks' => 'required|integer',
-            'components' => 'required|array|min:1',
+            'exam_term_id'    => ['required', $this->scoped('exam_terms', $schoolId)],
+            'exam_type_id'    => ['required', $this->scoped('exam_types', $schoolId)],
+            'school_class_id' => ['required', $this->scoped('school_classes', $schoolId)],
+            'subject_ids'     => 'required|array|min:1',
+            'subject_ids.*'   => ['required', $this->scoped('subjects', $schoolId)],
+            'scoring_type'    => 'required|in:marks,grade',
+            'passing_marks'   => 'required|integer',
+            'components'      => 'required|array|min:1',
             'components.*.name' => 'required|string',
             'components.*.max_marks' => 'required|integer|min:1'
         ]);
@@ -182,13 +193,19 @@ class ExamConfigurationController extends Controller
 
     public function cloneStructure(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'source_term_id' => 'required|exists:exam_terms,id',
-            'target_term_id' => 'required|exists:exam_terms,id',
+            'source_term_id' => ['required', $this->scoped('exam_terms', $schoolId)],
+            'target_term_id' => ['required', $this->scoped('exam_terms', $schoolId)],
         ]);
 
-        $sources = ExamStructure::where('exam_term_id', $validated['source_term_id'])->with('components')->get();
-        
+        // Defensive: also bound the source query to terms in this school in
+        // case a future code path lets a foreign term sneak past validation.
+        $sources = ExamStructure::where('exam_term_id', $validated['source_term_id'])
+            ->whereHas('term', fn($q) => $q->where('school_id', $schoolId))
+            ->with('components')
+            ->get();
+
         DB::transaction(function() use ($sources, $validated) {
             foreach ($sources as $source) {
                 $new = $source->replicate();
@@ -208,7 +225,12 @@ class ExamConfigurationController extends Controller
 
     public function togglePublication(Request $request, $id)
     {
-        $structure = ExamStructure::findOrFail($id);
+        // Tenant guard: scope by the parent term's school_id. The original
+        // findOrFail() would happily toggle a publication state on any
+        // structure id, including one belonging to another school.
+        $schoolId = $request->user()->school_id;
+        $structure = ExamStructure::whereHas('term', fn($q) => $q->where('school_id', $schoolId))
+            ->findOrFail($id);
         $structure->is_published = !$structure->is_published;
         $structure->save();
 
@@ -219,12 +241,67 @@ class ExamConfigurationController extends Controller
         ]);
     }
 
+    /**
+     * Delete an academic term. Refuses if any exam structure (and therefore
+     * possibly marks) still depend on it — those references must be cleaned
+     * up first. Tenant-scoped find prevents cross-school deletes.
+     */
+    public function destroyTerm(Request $request, $id)
+    {
+        $schoolId = $request->user()->school_id;
+        $term = ExamTerm::where('school_id', $schoolId)->findOrFail($id);
+
+        $dependents = ExamStructure::where('exam_term_id', $term->id)->count();
+        if ($dependents > 0) {
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot delete: $dependents exam structure(s) are still linked to this term. Remove those first.",
+            ], 422);
+        }
+
+        $term->delete();
+        return response()->json(['success' => true, 'message' => 'Term deleted.']);
+    }
+
+    /**
+     * Delete an exam type. Refuses if any structure is using it.
+     */
+    public function destroyType(Request $request, $id)
+    {
+        $schoolId = $request->user()->school_id;
+        $type = ExamType::where('school_id', $schoolId)->findOrFail($id);
+
+        $dependents = ExamStructure::where('exam_type_id', $type->id)->count();
+        if ($dependents > 0) {
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot delete: $dependents exam structure(s) are still using this type.",
+            ], 422);
+        }
+
+        $type->delete();
+        return response()->json(['success' => true, 'message' => 'Exam type deleted.']);
+    }
+
+    /**
+     * Delete a grading-scale row. Grading scales are referenced by mark-grade
+     * lookups at compute time only, so there are no FK dependents to gate on.
+     */
+    public function destroyGradingScale(Request $request, $id)
+    {
+        $schoolId = $request->user()->school_id;
+        $scale = GradingScale::where('school_id', $schoolId)->findOrFail($id);
+        $scale->delete();
+        return response()->json(['success' => true, 'message' => 'Grading scale removed.']);
+    }
+
     public function batchTogglePublication(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'school_class_id' => 'required|exists:school_classes,id',
-            'exam_term_id' => 'required|exists:exam_terms,id',
-            'publish' => 'required|boolean'
+            'school_class_id' => ['required', $this->scoped('school_classes', $schoolId)],
+            'exam_term_id'    => ['required', $this->scoped('exam_terms', $schoolId)],
+            'publish'         => 'required|boolean'
         ]);
 
         $count = ExamStructure::where('school_class_id', $validated['school_class_id'])

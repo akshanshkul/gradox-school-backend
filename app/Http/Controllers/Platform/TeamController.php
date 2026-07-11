@@ -32,13 +32,21 @@ class TeamController extends Controller
             'role' => 'nullable|in:owner,staff',
         ]);
 
-        $admin = PlatformAdmin::create([
+        // `role` and `status` were intentionally removed from PlatformAdmin's
+        // $fillable so a self-service code path (profile update etc.) can't
+        // accidentally set them. We're inside the owner-gated team flow here,
+        // so it's safe to use forceFill to bypass the mass-assignment guard.
+        $admin = new PlatformAdmin();
+        $admin->fill([
             'name' => $data['name'],
             'email' => $data['email'],
             'password' => Hash::make($data['password']),
+        ]);
+        $admin->forceFill([
             'role' => $data['role'] ?? 'staff',
             'status' => 'active',
         ]);
+        $admin->save();
 
         $this->audit->log($request->user()->id, 'team.create', 'platform_admin', $admin->id, ['email' => $admin->email, 'role' => $admin->role], $request);
 
@@ -62,7 +70,34 @@ class TeamController extends Controller
             $data['password'] = Hash::make($data['password']);
         }
 
-        $admin->update($data);
+        // Split the update so non-privileged fields go through the regular
+        // mass-assign guard and privileged fields use forceFill explicitly.
+        // Also: protect against owner-lockout — refuse a role change that
+        // would leave zero active owners. Without this an owner can demote
+        // themselves or the last peer to staff and nobody can manage the
+        // team again.
+        $maybeDemotingLastOwner =
+            isset($data['role']) && $data['role'] !== 'owner' && $admin->role === 'owner';
+        $maybeDisablingLastOwner =
+            isset($data['status']) && $data['status'] !== 'active' && $admin->role === 'owner';
+
+        if ($maybeDemotingLastOwner || $maybeDisablingLastOwner) {
+            $activeOwners = PlatformAdmin::where('role', 'owner')
+                ->where('status', 'active')
+                ->where('id', '!=', $admin->id)
+                ->count();
+            if ($activeOwners === 0) {
+                return response()->json([
+                    'message' => 'At least one active owner must remain. Promote another admin to owner first.',
+                ], 422);
+            }
+        }
+
+        $regular = array_intersect_key($data, array_flip(['name', 'email', 'password']));
+        $privileged = array_intersect_key($data, array_flip(['role', 'status']));
+        if (!empty($regular)) $admin->fill($regular);
+        if (!empty($privileged)) $admin->forceFill($privileged);
+        $admin->save();
 
         $this->audit->log($request->user()->id, 'team.update', 'platform_admin', $admin->id, ['changed' => array_keys($data)], $request);
 
@@ -76,6 +111,21 @@ class TeamController extends Controller
             return response()->json(['message' => 'You cannot delete your own account.'], 422);
         }
         $admin = PlatformAdmin::findOrFail($id);
+
+        // Same owner-lockout guard as ::update — deleting the last active
+        // owner leaves the team unmanageable.
+        if ($admin->role === 'owner' && $admin->status === 'active') {
+            $otherActiveOwners = PlatformAdmin::where('role', 'owner')
+                ->where('status', 'active')
+                ->where('id', '!=', $admin->id)
+                ->count();
+            if ($otherActiveOwners === 0) {
+                return response()->json([
+                    'message' => 'Cannot delete the last active owner. Promote another admin first.',
+                ], 422);
+            }
+        }
+
         $admin->delete();
 
         $this->audit->log($request->user()->id, 'team.delete', 'platform_admin', (int) $id, [], $request);

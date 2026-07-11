@@ -32,8 +32,16 @@ class School extends Model
         'landing_theme_config',
         'email_settings',
         'plan_name',
+        'plan_id',
+        // Resolved module-access cache. Written exclusively by
+        // ModuleAccessService::recompute — never set by hand from
+        // controller code; that would drift from the source of truth.
+        'module_cache_bitmap',
+        'module_cache_version',
         'subscription_status',
         'subscription_expires_at',
+        'trial_extended_until',
+        'student_limit_override',
         'grace_days',
         'current_session',
         'latitude',
@@ -49,11 +57,145 @@ class School extends Model
         'onboarding_steps' => 'array',
         'working_days' => 'array',
         'subscription_expires_at' => 'datetime',
+        'trial_extended_until' => 'date',
+        'student_limit_warning_sent_at' => 'datetime',
+        'student_limit_override' => 'integer',
         'grace_days' => 'integer',
         'latitude' => 'float',
         'longitude' => 'float',
         'geofence_radius' => 'integer',
     ];
+
+    public function plan()
+    {
+        return $this->belongsTo(Plan::class, 'plan_id');
+    }
+
+    /**
+     * Per-school module overrides (gifts and temporary disables).
+     * Resolved together with plan defaults by ModuleAccessService.
+     */
+    public function moduleOverrides()
+    {
+        return $this->hasMany(SchoolModuleOverride::class);
+    }
+
+    /**
+     * In-memory cache of decoded module codes, populated lazily on
+     * first access in a request. Avoids re-splitting the cached
+     * bitmap string on every check.
+     */
+    protected ?array $_decodedModuleSet = null;
+
+    /**
+     * Fast O(1) check: does this school currently have the given
+     * module enabled? Reads from the cached bitmap column — no JOIN,
+     * no per-request DB query after the first hit.
+     */
+    public function hasModule(string $code): bool
+    {
+        if ($this->_decodedModuleSet === null) {
+            $bitmap = (string) ($this->module_cache_bitmap ?? '');
+            $this->_decodedModuleSet = array_flip(
+                $bitmap === '' ? [] : explode(' ', $bitmap)
+            );
+        }
+        return isset($this->_decodedModuleSet[$code]);
+    }
+
+    /**
+     * Force a reload of the per-request cache. Call after this
+     * school's bitmap was just updated mid-request (rare, but happens
+     * during plan changes or first-call seeding).
+     */
+    public function refreshModuleCache(): void
+    {
+        $this->_decodedModuleSet = null;
+    }
+
+    /**
+     * Keep `plan_name` (legacy string column) and `plan_id` (FK to plans)
+     * in lockstep on every save. Historically the codebase had four
+     * different call sites writing schools (self-signup, platform create,
+     * platform update, platform assign-plan) and only one of them wrote
+     * the FK. That left rows with `plan_name='Premium'` but `plan_id=2`
+     * (Free Trial), and the new usage / limit code reads only `plan_id`
+     * so the UI showed the wrong cap and admissions got wrongly blocked.
+     *
+     * Instead of remembering to update both columns in every controller,
+     * we sync at the model layer:
+     *
+     *   - If a caller dirties `plan_id` → set `plan_name` to that plan's name.
+     *   - If a caller dirties only `plan_name` → look up a Plan with that
+     *     name (case-insensitive) and set `plan_id`. If none matches, leave
+     *     `plan_id` untouched so the row still saves — the reconcile
+     *     command can be re-run later once the plan is created.
+     *
+     * Either way, the columns can never drift again from in-app writes.
+     */
+    protected static function booted()
+    {
+        static::saving(function (School $school) {
+            $dirtyId = $school->isDirty('plan_id');
+            $dirtyName = $school->isDirty('plan_name');
+
+            if ($dirtyId && $school->plan_id) {
+                $plan = Plan::find($school->plan_id);
+                if ($plan) {
+                    $school->plan_name = $plan->name;
+                }
+                return;
+            }
+
+            if ($dirtyName && !$dirtyId && $school->plan_name) {
+                $plan = Plan::whereRaw('LOWER(name) = ?', [strtolower($school->plan_name)])->first();
+                if ($plan) {
+                    $school->plan_id = $plan->id;
+                    // Also canonicalise the spelling so "premium" becomes "Premium".
+                    $school->plan_name = $plan->name;
+                }
+            }
+        });
+    }
+
+    public function students()
+    {
+        return $this->hasMany(Student::class);
+    }
+
+    /**
+     * The student-cap that actually applies to this school. plan.max_students
+     * + any per-school bump the platform admin granted. Null means unlimited
+     * (the Premium plan has max_students = null, and we treat that as "no cap").
+     */
+    public function effectiveStudentLimit(): ?int
+    {
+        $plan = $this->plan;
+        $base = $plan?->max_students;
+        if ($base === null) return null; // unlimited
+        return (int) $base + (int) ($this->student_limit_override ?? 0);
+    }
+
+    /**
+     * Count of active students in this school — the figure compared against
+     * effectiveStudentLimit() everywhere usage matters.
+     */
+    public function currentStudentCount(): int
+    {
+        return (int) Student::where('school_id', $this->id)
+            ->where('status', 'active')
+            ->count();
+    }
+
+    /**
+     * 0-100+ percent. Unlimited plans always return 0 (no warning to surface).
+     */
+    public function studentUsagePercent(): int
+    {
+        $limit = $this->effectiveStudentLimit();
+        if (!$limit) return 0;
+        return (int) round(($this->currentStudentCount() / $limit) * 100);
+    }
 
     public function landingBanners()
     {

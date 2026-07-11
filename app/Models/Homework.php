@@ -12,11 +12,22 @@ class Homework extends Model
         'created_by',
         'school_class_id',
         'subject_id',
+        'kind',         // 'homework' (text, for_date) | 'assignment' (due_date + PDF submissions)
         'title',
         'description',
-        'due_date',
+        'for_date',     // calendar day the homework is FOR (homework kind)
+        'due_date',     // submission deadline (assignment kind)
         'status',
     ];
+
+    protected $casts = [
+        'for_date' => 'date',
+        'due_date' => 'date',
+    ];
+
+    /** Convenience flags so callers don't have to compare strings. */
+    public function isAssignment(): bool { return $this->kind === 'assignment'; }
+    public function isHomework(): bool   { return $this->kind === 'homework' || $this->kind === null; }
 
     public function school()
     {
@@ -36,5 +47,14 @@ class Homework extends Model
     public function subject()
     {
         return $this->belongsTo(Subject::class);
+    }
+
+    /**
+     * All submissions for this row. Only meaningful for `assignment`
+     * rows — homework rows will always have zero.
+     */
+    public function submissions()
+    {
+        return $this->hasMany(AssignmentSubmission::class);
     }
 }

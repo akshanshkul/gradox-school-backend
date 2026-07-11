@@ -4,14 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Models\TimetableEntry;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class TimetableController extends Controller
 {
     public function addEntry(Request $request)
     {
-        $this->validateEntry($request);
-
         $school_id = $request->user()->school_id;
+        $validated = $this->validateEntry($request, $school_id);
 
         // Auto-assign classroom if not provided
         if (!$request->classroom_id) {
@@ -33,16 +33,24 @@ class TimetableController extends Controller
             return $this->errorResponse('Selected staff member is not part of the teaching faculty.', 422);
         }
 
-        $entry = TimetableEntry::create(array_merge($request->all(), ['school_id' => $school_id]));
+        // Only persist the validated, school-scoped fields. Using $request->all()
+        // here used to let any extra column ride along (e.g. school_id override
+        // from the body) and bypass the tenancy guard.
+        $payload = array_merge(
+            $validated,
+            ['classroom_id' => $request->classroom_id, 'school_id' => $school_id]
+        );
+        $entry = TimetableEntry::create($payload);
 
         return response()->json($entry->load(['schoolClass', 'subject', 'teacher', 'classroom']));
     }
 
     public function updateEntry(Request $request, $id)
     {
-        $entry = TimetableEntry::where('school_id', $request->user()->school_id)->findOrFail($id);
-
         $school_id = $request->user()->school_id;
+        $entry = TimetableEntry::where('school_id', $school_id)->findOrFail($id);
+
+        $validated = $this->validateEntry($request, $school_id);
 
         // Auto-assign classroom if not provided
         if (!$request->classroom_id) {
@@ -64,7 +72,9 @@ class TimetableController extends Controller
             return $this->errorResponse('Selected staff member is not part of the teaching faculty.', 422);
         }
 
-        $entry->update($request->all());
+        // Same as addEntry: only the validated set + the (possibly auto-picked)
+        // classroom_id. school_id is never client-controlled.
+        $entry->update(array_merge($validated, ['classroom_id' => $request->classroom_id]));
 
         return response()->json($entry->load(['schoolClass', 'subject', 'teacher', 'classroom']));
     }
@@ -76,13 +86,31 @@ class TimetableController extends Controller
         return $this->successResponse(null, 'Entry deleted successfully');
     }
 
-    private function validateEntry(Request $request)
+    /**
+     * Validate a timetable entry payload AND make sure every FK belongs to
+     * the caller's school. The pre-existing rules used unscoped exists:* which
+     * happily accepted, say, another school's classroom_id — the row would
+     * then be created with our school_id but pointing at a foreign classroom.
+     */
+    private function validateEntry(Request $request, int $schoolId): array
     {
         return $request->validate([
-            'school_class_id' => 'required|exists:school_classes,id',
-            'subject_id' => 'required|exists:subjects,id',
-            'user_id' => 'required|exists:users,id',
-            'classroom_id' => 'nullable|exists:classrooms,id',
+            'school_class_id' => [
+                'required',
+                Rule::exists('school_classes', 'id')->where(fn($q) => $q->where('school_id', $schoolId)),
+            ],
+            'subject_id' => [
+                'required',
+                Rule::exists('subjects', 'id')->where(fn($q) => $q->where('school_id', $schoolId)),
+            ],
+            'user_id' => [
+                'required',
+                Rule::exists('users', 'id')->where(fn($q) => $q->where('school_id', $schoolId)),
+            ],
+            'classroom_id' => [
+                'nullable',
+                Rule::exists('classrooms', 'id')->where(fn($q) => $q->where('school_id', $schoolId)),
+            ],
             'date' => 'required|date',
             'day_of_week' => 'nullable|string',
             'start_time' => 'required',

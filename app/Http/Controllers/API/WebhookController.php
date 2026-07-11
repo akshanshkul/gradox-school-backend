@@ -22,21 +22,37 @@ class WebhookController extends Controller
     {
         $webhookSecret = env('RAZORPAY_WEBHOOK_SECRET');
         $signature = $request->header('X-Razorpay-Signature');
-        
+
         $payload = $request->getContent();
 
-        // 1. Verify Signature
-        if ($webhookSecret) {
-            try {
-                $api = new Api(env('RAZORPAY_KEY_ID'), env('RAZORPAY_KEY_SECRET'));
-                $api->utility->verifyWebhookSignature($payload, $signature, $webhookSecret);
-            } catch (SignatureVerificationError $e) {
-                Log::error('Razorpay Webhook Signature Verification Failed', [
-                    'error' => $e->getMessage(),
-                    'signature' => $signature
-                ]);
-                return response()->json(['success' => false, 'message' => 'Invalid signature'], 400);
-            }
+        // 1. Verify Signature — FAIL-CLOSED.
+        // Without a configured secret OR a signature header on the request,
+        // we cannot trust the payload. Previous behavior silently skipped
+        // verification when the secret was unset, which let any anonymous
+        // POST mark fees collected. Now any missing piece is a hard reject.
+        if (empty($webhookSecret)) {
+            Log::critical('Razorpay webhook hit with no RAZORPAY_WEBHOOK_SECRET configured', [
+                'ip' => $request->ip(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Webhook not configured'], 500);
+        }
+        if (empty($signature)) {
+            Log::warning('Razorpay webhook hit with missing signature header', [
+                'ip' => $request->ip(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Missing signature'], 400);
+        }
+
+        try {
+            $api = new Api(env('RAZORPAY_KEY_ID'), env('RAZORPAY_KEY_SECRET'));
+            $api->utility->verifyWebhookSignature($payload, $signature, $webhookSecret);
+        } catch (SignatureVerificationError $e) {
+            Log::error('Razorpay Webhook Signature Verification Failed', [
+                'error' => $e->getMessage(),
+                'signature' => $signature,
+                'ip' => $request->ip(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Invalid signature'], 400);
         }
 
         $data = json_decode($payload, true);

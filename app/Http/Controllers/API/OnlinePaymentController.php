@@ -96,6 +96,32 @@ class OnlinePaymentController extends Controller
                 ]
             ]);
 
+            // Diagnostic log so we can correlate a "Payment Error Object: {}"
+            // event on the device with the exact payload the server sent.
+            // The empty {} error from the React Native SDK means the
+            // checkout sheet closed without firing a success or a typed
+            // failure — almost always one of:
+            //   1. User tapped back / dismissed the sheet
+            //   2. Amount = 0 (Razorpay rejects silently on RN)
+            //   3. order_id and key are from different Razorpay accounts
+            //      (would happen if the .env key and a stale per-school
+            //      config got mixed up)
+            // Logging key prefix + order id lets us rule (3) out at a
+            // glance — both must share the same `_test_` / `_live_` mode
+            // and the same account prefix.
+            \Log::info('payments.initiate.ok', [
+                'order_id'       => $razorpayOrder['id'],
+                'order_status'   => $razorpayOrder['status'] ?? null,
+                'amount_paise'   => $orderData['amount'],
+                'currency'       => $orderData['currency'],
+                'key_prefix'     => substr($razorpayData['key_id'], 0, 14) . '...',
+                'school_id'      => $assignment->school_id,
+                'student_id'     => $student->id,
+                'assignment_id'  => $assignment->id,
+                'config_source'  => SchoolPaymentConfig::where('school_id', $assignment->school_id)
+                    ->where('is_active', true)->exists() ? 'school_override' : 'env_default',
+            ]);
+
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -107,6 +133,13 @@ class OnlinePaymentController extends Controller
                 ]
             ]);
         } catch (\Exception $e) {
+            \Log::error('payments.initiate.failed', [
+                'error'         => $e->getMessage(),
+                'school_id'     => $assignment->school_id,
+                'student_id'    => $student->id,
+                'assignment_id' => $assignment->id,
+                'amount_paise'  => $orderData['amount'] ?? null,
+            ]);
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }

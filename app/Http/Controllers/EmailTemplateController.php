@@ -59,4 +59,35 @@ class EmailTemplateController extends Controller
             'template' => $template
         ]);
     }
+
+    /**
+     * Reset a school's customized template back to the system default by
+     * deleting the school's override row. Subsequent reads fall through to
+     * the system row (school_id IS NULL) via index()'s grouping logic.
+     *
+     * No-ops cleanly if no override exists — useful so the UI can call this
+     * blindly without 404 noise.
+     */
+    public function destroy(Request $request, $slug)
+    {
+        $schoolId = $request->user()->school_id;
+
+        $deleted = EmailTemplate::where('school_id', $schoolId)
+            ->where('slug', $slug)
+            ->delete();
+
+        // Return the now-active template (the system default) so the client
+        // can rehydrate its form without a second round-trip.
+        $current = EmailTemplate::where('slug', $slug)
+            ->whereNull('school_id')
+            ->first();
+
+        return response()->json([
+            'message' => $deleted
+                ? 'Template reset to the system default.'
+                : 'No override existed — already on the system default.',
+            'override_deleted' => $deleted > 0,
+            'template' => $current,
+        ]);
+    }
 }

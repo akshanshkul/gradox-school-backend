@@ -8,6 +8,7 @@ use App\Models\School;
 use App\Models\User;
 use App\Services\PlatformAuditService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class BroadcastController extends Controller
@@ -33,7 +34,23 @@ class BroadcastController extends Controller
             'type' => 'nullable|in:info,success,warning,danger',
             'audience' => 'nullable|in:all,active,trialing,suspended,expired',
             'channel' => 'nullable|in:in_app,email,both',
+            // Optional but encouraged: a client-provided idempotency key so
+            // a network retry / double-click can't fire the broadcast twice.
+            // The frontend generates a UUID per "Send" click and passes it
+            // here; the server remembers it for 24h and short-circuits any
+            // repeat within that window.
+            'idempotency_key' => 'nullable|string|max:64',
         ]);
+
+        $idempotencyKey = $data['idempotency_key'] ?? null;
+        $cacheKey = $idempotencyKey
+            ? "platform:broadcast:idem:{$request->user()->id}:{$idempotencyKey}"
+            : null;
+
+        if ($cacheKey && ($prev = Cache::get($cacheKey)) !== null) {
+            // Already processed this exact send — return the original result.
+            return response()->json($prev + ['idempotent' => true]);
+        }
 
         $audience = $data['audience'] ?? 'all';
         $channel = $data['channel'] ?? 'in_app';
@@ -74,7 +91,15 @@ class BroadcastController extends Controller
             $request
         );
 
-        return response()->json(['broadcast' => $broadcast->fresh()]);
+        $payload = ['broadcast' => $broadcast->fresh()];
+
+        // Remember the result so any retry with the same idempotency key
+        // returns the original broadcast row instead of creating a new one.
+        if ($cacheKey) {
+            Cache::put($cacheKey, $payload, now()->addHours(24));
+        }
+
+        return response()->json($payload);
     }
 
     private function deliverInApp($schoolIds, string $subject, string $body, string $type, int $broadcastId): int

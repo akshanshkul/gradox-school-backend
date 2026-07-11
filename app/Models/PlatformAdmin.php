@@ -13,12 +13,21 @@ class PlatformAdmin extends Authenticatable
 
     protected $table = 'platform_admins';
 
+    /**
+     * NOTE: `role` and `status` are deliberately NOT in $fillable. They are
+     * privileged fields — only the TeamController (owner-only routes) should
+     * be allowed to write them. Mass-assignment via `update($request->all())`
+     * in any future self-service code path (profile, password reset, etc.)
+     * would otherwise let a staff admin promote themselves to owner or
+     * reactivate a suspended account.
+     *
+     * Code that legitimately needs to set them uses `forceFill()` after an
+     * explicit authorization check — see TeamController::update / ::store.
+     */
     protected $fillable = [
         'name',
         'email',
         'password',
-        'role',
-        'status',
         'last_login_at',
     ];
 

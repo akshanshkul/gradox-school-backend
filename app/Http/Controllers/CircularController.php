@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class CircularController extends Controller
 {
@@ -45,12 +46,23 @@ class CircularController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
+        // Tenant-scoped exists rules: school_class_id and student_id MUST belong
+        // to the caller's school. Without this, an admin in school A could post
+        // a circular targeting school B's class id and our sendPushNotifications
+        // would FCM-blast school B's students. The `student_id` rule still
+        // allows the special "lookup by admission number" path handled below,
+        // so we accept any string-or-id here and re-check against the school
+        // when we resolve the actual Student row.
         $request->validate([
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'type' => 'required|in:ptm,circular,personal,event,notice',
             'scope' => 'required|in:school,class,student',
-            'school_class_id' => 'required_if:scope,class|nullable',
+            'school_class_id' => [
+                'required_if:scope,class',
+                'nullable',
+                Rule::exists('school_classes', 'id')->where(fn($q) => $q->where('school_id', $user->school_id)),
+            ],
             'student_id' => 'required_if:scope,student|nullable',
             'published_at' => 'nullable|date',
             'expires_at' => 'nullable|date|after_or_equal:published_at',
@@ -162,13 +174,24 @@ class CircularController extends Controller
             return $this->errorResponse('Unauthorized to update this circular.', 403);
         }
 
+        // Same tenant-scoped rules as store(). student_id (when provided as a
+        // raw id) is also checked against the school below; the admission-number
+        // lookup path is handled at resolve time.
         $request->validate([
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
             'type' => 'required|in:ptm,circular,personal,event,notice',
             'scope' => 'required|in:school,class,student',
-            'school_class_id' => 'required_if:scope,class|nullable',
-            'student_id' => 'required_if:scope,student|nullable',
+            'school_class_id' => [
+                'required_if:scope,class',
+                'nullable',
+                Rule::exists('school_classes', 'id')->where(fn($q) => $q->where('school_id', $user->school_id)),
+            ],
+            'student_id' => [
+                'required_if:scope,student',
+                'nullable',
+                Rule::exists('students', 'id')->where(fn($q) => $q->where('school_id', $user->school_id)),
+            ],
             'published_at' => 'nullable|date',
             'expires_at' => 'nullable|date|after_or_equal:published_at',
             'image' => 'nullable|image|max:2048',

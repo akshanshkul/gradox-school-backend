@@ -14,8 +14,14 @@ class ReportsController extends Controller
         $query = $this->revenueQuery($request);
         $payments = $query->paginate((int) ($request->query('per_page', 50)));
 
+        // Aggregates query: must NOT inherit the regular SELECT list or the
+        // ORDER BY (both reference non-aggregate columns and MySQL strict
+        // mode rejects "mixing aggregates with non-aggregates without
+        // GROUP BY"). `reorder()` drops the ORDER BY; `select()` replaces
+        // the column list with just the aggregates.
         $summary = (clone $query)
-            ->selectRaw('COUNT(*) as count, COALESCE(SUM(amount), 0) as total')
+            ->reorder()
+            ->select(\DB::raw('COUNT(*) as count'), \DB::raw('COALESCE(SUM(subscription_payments.amount), 0) as total'))
             ->first();
 
         return response()->json([

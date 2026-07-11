@@ -58,19 +58,30 @@ class AcademicService
 
     /**
      * Get class rankings for a specific exam term.
+     *
+     * Only counts marks belonging to PUBLISHED structures — draft entries
+     * that a teacher hasn't yet published shouldn't influence the ranking
+     * shown back to admins or students. Also joins through exam_terms so
+     * the school_id check enforces tenant isolation; before this the join
+     * trusted the caller's class+term ids blindly.
      */
-    public function getClassRankings($schoolClassId, $examTermId)
+    public function getClassRankings($schoolClassId, $examTermId, ?int $schoolId = null)
     {
-        $rankings = DB::table('student_exam_marks as sem')
+        $q = DB::table('student_exam_marks as sem')
             ->join('exam_structures as es', 'sem.exam_structure_id', '=', 'es.id')
+            ->join('exam_terms as et', 'es.exam_term_id', '=', 'et.id')
             ->select('sem.student_id', DB::raw('SUM(sem.total_obtained) as total_score'))
             ->where('es.school_class_id', $schoolClassId)
             ->where('es.exam_term_id', $examTermId)
+            ->where('es.is_published', true)
             ->groupBy('sem.student_id')
-            ->orderBy('total_score', 'desc')
-            ->get();
+            ->orderBy('total_score', 'desc');
 
-        return $rankings->map(function($item, $index) {
+        if ($schoolId !== null) {
+            $q->where('et.school_id', $schoolId);
+        }
+
+        return $q->get()->map(function ($item, $index) {
             $item->rank = $index + 1;
             return $item;
         });

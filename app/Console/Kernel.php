@@ -12,7 +12,9 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+        // Daily student-limit warning emails. Debounced inside the command
+        // to once per 7 days per school, so this can safely run every day.
+        $schedule->command('limits:check')->dailyAt('06:00')->withoutOverlapping();
     }
 
     /**

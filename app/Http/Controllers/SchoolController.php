@@ -87,10 +87,26 @@ class SchoolController extends Controller
     {
         try {
             set_time_limit(120);
+            // IMPORTANT: include `teacher_details`, `permission_overrides`,
+            // and `staff_subtype` in the SELECT.
+            //
+            // These power the staff profile page's editable sections —
+            // Specializations (teacher_details.specializations), Education
+            // (teacher_details.education), Off-Periods, RBAC overrides.
+            // Omitting them silently broke the "Assign Subject" flow:
+            // backend saves successfully, but after the forced refresh
+            // the teacher arrived without teacher_details and the panel
+            // re-rendered with "No subjects currently assigned" even
+            // though the JSON column was set on disk.
             return $this->successResponse(
                 $request->user()->school->users()
                     ->where('status', 'active')
-                    ->select('users.id', 'users.name', 'users.profile_picture', 'users.email', 'users.role_id', 'users.school_id', 'users.is_teaching')
+                    ->select(
+                        'users.id', 'users.name', 'users.profile_picture',
+                        'users.email', 'users.role_id', 'users.school_id',
+                        'users.is_teaching', 'users.staff_subtype',
+                        'users.teacher_details', 'users.permission_overrides'
+                    )
                     ->with('role_relation:id,name,slug')
                     ->get()
             );
@@ -321,15 +337,32 @@ class SchoolController extends Controller
             'syllabus.*.status' => 'required|in:pending,in-progress,completed',
             'teacher_id' => 'nullable|exists:users,id',
             'periods_per_week' => 'nullable|integer|min:1',
+            // HTML produced by the Lesson Plan rich-text editor. Capped at
+            // 5MB string to stay well below MySQL longText (16MB) and keep
+            // request bodies sane. Real-world lesson plans rarely exceed
+            // a few hundred KB even after importing a long .docx.
+            'lesson_plan' => 'nullable|string|max:5242880',
         ]);
 
         $updateData = [];
-        
+
         // Only admins or class teachers can change the assigned teacher or periods per week
         $canManageAssignment = $user->isAdmin() || ((int)$schoolClass->class_teacher_id === (int)$user->id);
         if ($canManageAssignment) {
             if ($request->has('teacher_id')) $updateData['teacher_id'] = $request->teacher_id;
             if ($request->has('periods_per_week')) $updateData['periods_per_week'] = $request->periods_per_week;
+        }
+
+        // Lesson plan is editable by anyone the auth check above already
+        // allowed (admin, class teacher, OR subject teacher). It lives on
+        // the pivot row itself — no child table — so we just merge it into
+        // the same update payload as teacher_id / periods_per_week. We
+        // explicitly normalise empty string → null so an editor cleared
+        // back to blank stores NULL instead of an empty <p></p>.
+        if ($request->has('lesson_plan')) {
+            $plan = $request->input('lesson_plan');
+            $stripped = trim(strip_tags((string) $plan));
+            $updateData['lesson_plan'] = $stripped === '' ? null : $plan;
         }
 
         if (!empty($updateData)) {
@@ -516,6 +549,71 @@ class SchoolController extends Controller
                 ->orderBy('name')
                 ->get()
         );
+    }
+
+    /**
+     * Active teaching assignments for one staff member, derived from
+     * the `class_subject` pivot — i.e. "what is this teacher actually
+     * teaching right now?"
+     *
+     * This is intentionally separate from the JSON
+     * `users.teacher_details->specializations` list, which represents
+     * INSTITUTIONAL QUALIFICATIONS ("certified to teach X"), not
+     * current assignments ("is teaching X to class Y this term").
+     *
+     * The two are deliberately decoupled in the schema — a teacher
+     * can be qualified for 8 subjects but only teaching 3 this year,
+     * or vice versa (substitute scenarios). This endpoint feeds the
+     * read-only "Currently Teaching" panel that sits next to the
+     * editable Specializations panel on the staff profile.
+     *
+     * Shape: { rows: [{ class_id, class_label, subject_id,
+     *                   subject_name, periods_per_week }] }
+     */
+    public function getTeachingAssignments($id, Request $request)
+    {
+        $user = $request->user();
+
+        // Multi-tenant guard — only allow lookups against teachers in
+        // the caller's school.
+        $teacher = User::where('id', $id)
+            ->where('school_id', $user->school_id)
+            ->firstOrFail();
+
+        // The pivot table `class_subject` carries teacher_id. We join
+        // through SchoolClass so we can filter by school_id (defence
+        // in depth — the FK alone could leak across schools through
+        // a bad relation in future).
+        $rows = \DB::table('class_subject as cs')
+            ->join('school_classes as c', 'c.id', '=', 'cs.school_class_id')
+            ->leftJoin('grades as g', 'g.id', '=', 'c.grade_id')
+            ->leftJoin('sections as s', 's.id', '=', 'c.section_id')
+            ->join('subjects as sub', 'sub.id', '=', 'cs.subject_id')
+            ->where('cs.teacher_id', $teacher->id)
+            ->where('c.school_id', $user->school_id)
+            ->select(
+                'c.id as class_id',
+                'g.name as grade_name',
+                's.name as section_name',
+                'sub.id as subject_id',
+                'sub.name as subject_name',
+                'cs.periods_per_week'
+            )
+            ->orderBy('g.name')
+            ->orderBy('s.name')
+            ->orderBy('sub.name')
+            ->get()
+            ->map(function ($r) {
+                return [
+                    'class_id'          => $r->class_id,
+                    'class_label'       => trim(($r->grade_name ?? '') . ' - ' . ($r->section_name ?? ''), ' -'),
+                    'subject_id'        => $r->subject_id,
+                    'subject_name'      => $r->subject_name,
+                    'periods_per_week'  => $r->periods_per_week,
+                ];
+            });
+
+        return $this->successResponse(['rows' => $rows]);
     }
 
     public function updateTeacherDetails($id, Request $request)
@@ -891,7 +989,7 @@ class SchoolController extends Controller
                     )
                     ->get();
 
-                // Fetch class subject details including periods, teacher, notes, and syllabus
+                // Fetch class subject details including periods, teacher, notes, syllabus, and lesson plan
                 $classSubjects = \DB::table('class_subject')
                     ->join('subjects', 'class_subject.subject_id', '=', 'subjects.id')
                     ->select(
@@ -901,7 +999,12 @@ class SchoolController extends Controller
                         'subjects.name',
                         'subjects.code',
                         'class_subject.periods_per_week',
-                        'class_subject.teacher_id'
+                        'class_subject.teacher_id',
+                        // lesson_plan is rich-text HTML edited via the Lesson Plan tab
+                        // of the Class Subject Studio. Must be included here so the
+                        // editor can re-seed itself after a refetch — otherwise the
+                        // text disappears the moment the modal is reopened.
+                        'class_subject.lesson_plan'
                     )
                     ->get();
 
@@ -960,6 +1063,7 @@ class SchoolController extends Controller
                             'teacher_id' => $sub->teacher_id,
                             'notes' => $subNotes,
                             'syllabus' => $subSyllabus,
+                            'lesson_plan' => $sub->lesson_plan,
                         ]
                     ];
                 })->groupBy('school_class_id');
@@ -1204,22 +1308,60 @@ class SchoolController extends Controller
             return $this->errorResponse('School not found', 404);
         }
 
-        return $this->successResponse([
-            'id' => $school->id,
-            'name' => $school->name,
-            'logo_path' => $school->logo_path,
-            'theme_color' => $school->theme_color,
-            'tagline' => $school->tagline,
-            'about_text' => $school->about_text,
+        // We DO NOT 403 this endpoint outright when the
+        // landing_page_widgets module is off, because the school
+        // admin / student / parent login screens ALSO call this
+        // endpoint to render the school's logo + name + theme color
+        // before authentication. Gating it would break login entirely.
+        //
+        // Instead: always return the BASIC identity (logo, name,
+        // theme, tagline) + a `landing_disabled` flag. The marketing
+        // landing page checks the flag and renders the "Page Currently
+        // Unavailable" card; the login screen ignores the flag and
+        // shows its normal UI.
+        $landingEnabled = \App\Services\ModuleAccessService::schoolHas($school, 'landing_page_widgets');
+
+        // Expose `admissions_open` so the public landing page can hide the
+        // "Apply for Admission" CTA when the school is suspended or has hit
+        // its student cap. We compute it here (one place) so the frontend
+        // doesn't have to know the rules.
+        $school->load('plan');
+        $svc = app(\App\Services\StudentLimitService::class);
+        $admissionsOpen = $school->subscription_status !== 'suspended'
+            && $svc->canAddStudents($school);
+
+        // Always-included identity. These fields are needed by the
+        // login screens of all four apps and must NEVER be gated.
+        $payload = [
+            'id'             => $school->id,
+            'name'           => $school->name,
+            'slug'           => $school->slug,
+            'logo_path'      => $school->logo_path,
+            'theme_color'    => $school->theme_color,
+            'tagline'        => $school->tagline,
             'contact_number' => $school->contact_number,
-            'email' => $school->email,
-            'admission_form_config' => $school->admission_form_config,
-            'landing_theme_config' => $school->landing_theme_config,
-            'email_settings' => $school->email_settings,
-            'banners' => $school->landingBanners,
-            'sections' => $school->landingSections()->where('is_active', true)->with('cards')->get(),
-            'classes' => $school->classes()->with(['grade', 'section'])->get(),
-        ]);
+            'email'          => $school->email,
+            // Marketing-disabled flag — frontend branches on this.
+            'landing_disabled' => !$landingEnabled,
+            'admissions_open'  => $admissionsOpen,
+        ];
+
+        // Rich marketing payload — only included when the module is on.
+        // Saves DB load on every login attempt for schools without the
+        // module, AND keeps the marketing-vs-auth boundary explicit.
+        if ($landingEnabled) {
+            $payload = array_merge($payload, [
+                'about_text'             => $school->about_text,
+                'admission_form_config'  => $school->admission_form_config,
+                'landing_theme_config'   => $school->landing_theme_config,
+                'email_settings'         => $school->email_settings,
+                'banners'                => $school->landingBanners,
+                'sections'               => $school->landingSections()->where('is_active', true)->with('cards')->get(),
+                'classes'                => $school->classes()->with(['grade', 'section'])->get(),
+            ]);
+        }
+
+        return $this->successResponse($payload);
     }
     public function getNotificationCounts(Request $request)
     {
@@ -1441,6 +1583,10 @@ class SchoolController extends Controller
                     'teacher_id' => $sub->pivot->teacher_id,
                     'notes' => $subNotes,
                     'syllabus' => $subSyllabus,
+                    // Read from the Eloquent pivot — SchoolClass::subjects()
+                    // declares lesson_plan in withPivot(...) so the column
+                    // comes back populated on the relation load above.
+                    'lesson_plan' => $sub->pivot->lesson_plan,
                 ]
             ];
         })->toArray();

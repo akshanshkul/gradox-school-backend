@@ -24,11 +24,22 @@ class AuthController extends Controller
         ]);
 
         return DB::transaction(function () use ($request) {
+            // Default new self-signups to the Free Trial plan if it exists.
+            // Historically this wrote plan_name='Grow' (a plan that never
+            // existed in the catalog), leaving plan_id NULL and breaking
+            // every downstream limit / usage helper. The School model's
+            // saving() hook now also auto-syncs name↔id, but we still
+            // resolve here so the very first INSERT has both columns set.
+            $trialPlan = \App\Models\Plan::where('slug', 'free-trial')
+                ->orWhere('name', 'Free Trial')
+                ->first();
+
             $school = School::create([
                 'name' => $request->school_name,
                 'email' => $request->school_email,
                 'slug' => $request->slug,
-                'plan_name' => 'Grow',
+                'plan_id' => $trialPlan?->id,
+                'plan_name' => $trialPlan?->name ?? 'Free Trial',
                 'subscription_status' => 'trialing',
                 'subscription_expires_at' => now()->addMonth(),
             ]);
@@ -123,6 +134,23 @@ class AuthController extends Controller
                 'email' => ['Invalid credentials.'],
             ]);
         }
+
+        // Suspension gate: non-admins can't log in when the school is suspended.
+        // Admins (administrator / admin / super-admin / incharge) keep access so
+        // they can see the suspension notice and contact the platform to renew.
+        // The platform's own impersonation flow doesn't go through this route
+        // (it mints tokens server-side), so it's not affected.
+        $school = $user->school;
+        if ($school && $school->subscription_status === 'suspended') {
+            $adminSlugs = ['administrator', 'admin', 'super-admin', 'incharge'];
+            $roleSlug = $user->role_relation?->slug ?? null;
+            if (!in_array($roleSlug, $adminSlugs, true)) {
+                throw ValidationException::withMessages([
+                    'email' => ['This school has been temporarily suspended. Please contact your school administrator.'],
+                ]);
+            }
+        }
+
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return $this->successResponse([
@@ -149,18 +177,39 @@ class AuthController extends Controller
 
     public function me(Request $request)
     {
-        return $this->successResponse(
-            $request->user()->load([
-                'school' => function ($q) {
-                    $q->select('id', 'name', 'slug', 'logo_path');
-                },
-                'role_relation',
-                'managedClasses' => function ($q) {
-                    $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
-                        ->with(['grade:id,name', 'section:id,name']);
-                }
-            ])
-        );
+        $user = $request->user()->load([
+            'school' => function ($q) {
+                $q->select('id', 'name', 'slug', 'logo_path');
+            },
+            'role_relation',
+            'managedClasses' => function ($q) {
+                $q->select('id', 'grade_id', 'section_id', 'class_teacher_id', 'school_id')
+                    ->with(['grade:id,name', 'section:id,name']);
+            }
+        ]);
+
+        // Include the school's effective module set so any client that
+        // calls /api/user (school admin web, teacher mobile app) gets
+        // the enabled modules in the same payload — no extra request
+        // needed on app boot. Resolved from the per-school cached
+        // bitmap, so this adds zero query cost.
+        $enabledModules = [];
+        if ($user->school) {
+            $full = \App\Models\School::find($user->school->id);
+            if ($full) {
+                $enabledModules = \App\Services\ModuleAccessService::for($full)->all();
+            }
+        }
+
+        // Back-compat: the existing /api/user response was the user
+        // object at the root. We preserve that shape and just APPEND
+        // enabled_modules as an extra attribute (Laravel automatically
+        // merges it into the model's array form). Older consumers that
+        // do `response.data.name` continue to work; newer code can
+        // read `response.data.enabled_modules`.
+        $user->setAttribute('enabled_modules', $enabledModules);
+
+        return $this->successResponse($user);
     }
 
     private function getFullDefaultPermissions()

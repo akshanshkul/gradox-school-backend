@@ -79,6 +79,19 @@ class PlanController extends Controller
     public function destroy(Request $request, $id)
     {
         $plan = Plan::findOrFail($id);
+
+        // Refuse to delete a plan that any school is currently on. Count by
+        // the `plan_id` FK — not by `plan_name` string, because a rename
+        // could leave the cached string stale and we'd under-count, letting
+        // an admin accidentally delete a plan that schools still depend on.
+        $usageCount = \App\Models\School::where('plan_id', $plan->id)->count();
+        if ($usageCount > 0) {
+            return response()->json([
+                'message' => "Cannot delete: $usageCount school(s) are currently on this plan. Reassign them to another plan first.",
+                'schools_using_plan' => $usageCount,
+            ], 422);
+        }
+
         $plan->delete();
 
         $this->audit->log($request->user()->id, 'plan.delete', 'plan', (int) $id, [], $request);

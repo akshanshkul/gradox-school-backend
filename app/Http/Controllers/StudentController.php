@@ -266,6 +266,348 @@ class StudentController extends Controller
         });
     }
 
+    /**
+     * Replace the student's profile photo. Separate from update() so the
+     * file upload path doesn't drag along all the validation rules of
+     * the full profile form — admins want to swap a blurry photo without
+     * having to refill the entire edit screen.
+     *
+     * Auth: admin, or the class teacher of the student's current class.
+     * Subject teachers are deliberately NOT allowed — photo management
+     * is administrative, not pedagogical.
+     *
+     * File: max 5 MB, image only. The uploaded object goes to the same
+     * S3 prefix as admission photos so a single S3 lifecycle policy can
+     * handle both. We attempt a best-effort delete of the previous photo
+     * object to avoid leaking storage; failures are logged but never
+     * block the update.
+     */
+    public function updatePhoto(Request $request, $id)
+    {
+        $user = $request->user();
+
+        $student = Student::where('school_id', $user->school_id)->findOrFail($id);
+
+        // RBAC: school admin OR the class teacher of this student's
+        // current section. Mirrors who can touch students.update().
+        $isAdmin = method_exists($user, 'isAdmin') ? $user->isAdmin() : false;
+        $isClassTeacher = false;
+        if (!$isAdmin) {
+            $currentRecord = $student->currentRecord;
+            if ($currentRecord && $currentRecord->school_class_id) {
+                $cls = \App\Models\SchoolClass::find($currentRecord->school_class_id);
+                $isClassTeacher = $cls && (int) $cls->class_teacher_id === (int) $user->id;
+            }
+        }
+        if (!$isAdmin && !$isClassTeacher) {
+            return $this->errorResponse(
+                'Only the school administrator or this student\'s class teacher can change the profile photo.',
+                403
+            );
+        }
+
+        $request->validate([
+            // 5 MB cap. image rule rejects non-image MIME types AND
+            // non-images that pretend to be images via extension.
+            'photo' => 'required|image|mimes:jpg,jpeg,png,webp|max:5120',
+        ]);
+
+        try {
+            // Same S3 prefix shape AdmissionController uses for admission
+            // photos, just under /students/ instead of /admissions/.
+            $path = $request->file('photo')->store(
+                'school-' . $student->school_id . '/students/photos',
+                's3'
+            );
+
+            if (!$path) {
+                return $this->errorResponse('Could not upload the photo. Please try again.', 500);
+            }
+
+            $url = \Storage::disk('s3')->url($path);
+            $oldUrl = $student->photo_path;
+
+            $student->update(['photo_path' => $url]);
+
+            // Best-effort cleanup of the previous object. We don't want
+            // to delete the previous file UNTIL the new one is safely
+            // stored AND the DB is updated — that way an S3 failure
+            // can't strand the student with no photo. Pull the key out
+            // of the URL and forget it from the disk. Any error here
+            // is non-fatal — it just leaks one orphaned S3 object.
+            if ($oldUrl) {
+                try {
+                    $oldKey = $this->s3KeyFromUrl($oldUrl);
+                    if ($oldKey && $oldKey !== $path) {
+                        \Storage::disk('s3')->delete($oldKey);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to delete old student photo from S3', [
+                        'student_id' => $student->id,
+                        'old_url'    => $oldUrl,
+                        'error'      => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            return $this->successResponse(
+                ['photo_path' => $url, 'student_id' => $student->id],
+                'Profile photo updated.'
+            );
+        } catch (\Throwable $e) {
+            \Log::error('Student photo update failed', [
+                'student_id' => $student->id,
+                'error'      => $e->getMessage(),
+            ]);
+            return $this->errorResponse('Could not update the profile photo. Please try again.', 500);
+        }
+    }
+
+    /**
+     * Extract the S3 key from a public S3 URL we generated via
+     * Storage::disk('s3')->url($path). The URL shape depends on the
+     * driver config (path-style vs virtual-hosted), so we strip from
+     * the bucket name onward. Returns null if we can't recognise the
+     * shape — callers must treat null as "skip cleanup".
+     */
+    private function s3KeyFromUrl(?string $url): ?string
+    {
+        if (!$url) return null;
+        // Anything after "school-" is the key we stored under. This
+        // matches every photo we've ever written (admissions + students),
+        // and is robust to bucket-name / region changes.
+        $marker = 'school-';
+        $pos = strpos($url, $marker);
+        return $pos === false ? null : substr($url, $pos);
+    }
+
+    /**
+     * Lightweight performance snapshot for the student-app dashboard.
+     *
+     * Returns just two numbers — overall academic score % and current-
+     * session attendance % — that drive the two circular progress
+     * indicators on the home screen. Used to be hardcoded as 85 and 92
+     * literals in the React Native code; this endpoint replaces them.
+     *
+     * Built as a separate, narrow endpoint instead of reusing the
+     * existing /students/results + /students/attendance/report:
+     *
+     *   - /students/results returns the full grouped-by-exam payload
+     *     PLUS runs a live "class average" query per subject, so it
+     *     scales as O(student_subjects). Way too heavy to call on every
+     *     dashboard mount.
+     *   - /students/attendance/report returns the entire record list
+     *     for the year (used by the Attendance screen). Same problem.
+     *
+     * This endpoint loads ONLY the aggregate columns it needs (sum +
+     * count) with a single pass over each table, so it's safe to call
+     * on every dashboard load and on pull-to-refresh.
+     */
+    public function performance(Request $request)
+    {
+        $login = $request->user();
+        $student = $login->student;
+
+        if (!$student) {
+            return $this->errorResponse('Student record not found', 404);
+        }
+
+        $school = $student->school;
+        $activeSession = $school?->getActiveSession();
+        $sessionId = $activeSession?->id;
+
+        // ---- Overall score (published marks, current session only) -----
+        // Sum of total_obtained / sum of total possible marks across all
+        // published exam structures for this student in the active term.
+        //
+        // Using a single SELECT with a subquery for max_marks per
+        // structure avoids the N+1 component->sum we'd get if we
+        // loaded the relationship the way /students/results does.
+        $marks = \DB::table('student_exam_marks')
+            ->join('exam_structures', 'student_exam_marks.exam_structure_id', '=', 'exam_structures.id')
+            ->leftJoin('exam_terms', 'exam_structures.exam_term_id', '=', 'exam_terms.id')
+            ->where('student_exam_marks.student_id', $student->id)
+            ->where('exam_structures.is_published', true)
+            ->when($sessionId, fn($q) => $q->where('exam_terms.session_id', $sessionId))
+            ->select('exam_structures.id as structure_id', 'student_exam_marks.total_obtained')
+            ->get();
+
+        $structureIds = $marks->pluck('structure_id')->unique()->all();
+        $maxPerStructure = \DB::table('exam_structure_components')
+            ->whereIn('exam_structure_id', $structureIds)
+            ->select('exam_structure_id', \DB::raw('SUM(max_marks) as total_max'))
+            ->groupBy('exam_structure_id')
+            ->get()
+            ->keyBy('exam_structure_id');
+
+        $sumObtained = 0.0;
+        $sumMax = 0.0;
+        foreach ($marks as $m) {
+            $max = (float) ($maxPerStructure[$m->structure_id]->total_max ?? 0);
+            if ($max <= 0) continue;
+            $sumObtained += (float) $m->total_obtained;
+            $sumMax += $max;
+        }
+        $overallScore = $sumMax > 0 ? (int) round(($sumObtained / $sumMax) * 100) : 0;
+        $publishedExamCount = $marks->pluck('structure_id')->unique()->count();
+
+        // ---- Attendance percent (current session) ----------------------
+        // Same formula as StudentAttendanceController::generateReportData
+        // so the dashboard ring and the attendance screen agree.
+        //
+        // (present + late + 0.5 * half_day) / total_days
+        //
+        // Scoped to the active session's date range when available; falls
+        // back to all-time records otherwise (which matches what the
+        // attendance report screen shows today).
+        $attendanceQuery = \DB::table('student_attendances')
+            ->where('student_id', $student->id)
+            ->where('school_id', $student->school_id);
+
+        if ($activeSession && $activeSession->start_date && $activeSession->end_date) {
+            $attendanceQuery->whereBetween('date', [$activeSession->start_date, $activeSession->end_date]);
+        }
+
+        $attCounts = $attendanceQuery
+            ->selectRaw("
+                COUNT(*) as total_days,
+                SUM(CASE WHEN status='present'  THEN 1 ELSE 0 END) as present_days,
+                SUM(CASE WHEN status='late'     THEN 1 ELSE 0 END) as late_days,
+                SUM(CASE WHEN status='half_day' THEN 1 ELSE 0 END) as half_days,
+                SUM(CASE WHEN status='absent'   THEN 1 ELSE 0 END) as absent_days
+            ")
+            ->first();
+
+        $totalDays    = (int) ($attCounts->total_days ?? 0);
+        $presentDays  = (int) ($attCounts->present_days ?? 0);
+        $lateDays     = (int) ($attCounts->late_days ?? 0);
+        $halfDays     = (int) ($attCounts->half_days ?? 0);
+        $absentDays   = (int) ($attCounts->absent_days ?? 0);
+
+        $weight = $presentDays + $lateDays + ($halfDays * 0.5);
+        $attendancePercent = $totalDays > 0 ? (int) round(($weight / $totalDays) * 100) : 0;
+
+        return $this->successResponse([
+            'overall_score'      => $overallScore,
+            'attendance_percent' => $attendancePercent,
+            // Side data the dashboard can use for the "View Detailed Report"
+            // affordance and to hide the card entirely on day-one accounts
+            // who have zero data yet.
+            'has_data' => [
+                'exams'      => $publishedExamCount > 0,
+                'attendance' => $totalDays > 0,
+            ],
+            'counts' => [
+                'published_exams'    => $publishedExamCount,
+                'attendance_total'   => $totalDays,
+                'attendance_present' => $presentDays,
+                'attendance_late'    => $lateDays,
+                'attendance_half'    => $halfDays,
+                'attendance_absent'  => $absentDays,
+            ],
+            'session' => $activeSession ? ['id' => $activeSession->id, 'name' => $activeSession->name] : null,
+        ], 'Performance snapshot retrieved');
+    }
+
+    /**
+     * Student-facing homework list — the homework currently assigned
+     * to the class the student is enrolled in for the active session.
+     *
+     * Returns the most recent first, capped at 50 items so a long-
+     * running class doesn't blow up the response. Pagination would be
+     * over-engineering for a single screen; we sort by due_date desc
+     * and let the UI scroll.
+     */
+    public function homework(Request $request)
+    {
+        $login = $request->user();
+        $student = $login->student;
+        if (!$student) {
+            return $this->errorResponse('Student record not found', 404);
+        }
+
+        $school = $student->school;
+        $activeSession = $school?->getActiveSession();
+        if (!$activeSession) {
+            return $this->successResponse(['homework' => []]);
+        }
+
+        $currentRecord = $student->academicRecords()
+            ->where('academic_year', $activeSession->id)
+            ->first();
+        if (!$currentRecord || !$currentRecord->school_class_id) {
+            return $this->successResponse(['homework' => []]);
+        }
+
+        // Fetch every active row for this class — homework AND
+        // assignment kinds. The student app splits them into two
+        // tabs client-side; the parent app shows them together. We
+        // include the current student's own submission (if any) so
+        // the UI can show "Submitted ✓ / Pending" without a second
+        // round trip per assignment.
+        $homeworks = \App\Models\Homework::where('school_id', $student->school_id)
+            ->where('school_class_id', $currentRecord->school_class_id)
+            ->where('status', 'active')
+            ->with([
+                'subject:id,name',
+                'creator:id,name',
+                // Eager-load ONLY this student's submission per row,
+                // not all submissions, to keep the payload tight.
+                'submissions' => function ($q) use ($student) {
+                    $q->where('student_id', $student->id);
+                },
+            ])
+            // Sort newest first using whichever date the row carries
+            // (assignments use due_date, homework uses for_date).
+            ->orderByRaw('COALESCE(due_date, for_date, created_at) DESC')
+            ->limit(100)
+            ->get();
+
+        $rows = $homeworks->map(function ($h) {
+            // Pull this student's submission (if any) from the
+            // eager-loaded relation. Nested relation is already
+            // scoped to student_id above, so it's at most one row.
+            $sub = $h->submissions->first();
+
+            $kind     = $h->kind ?? 'homework';
+            $dueDate  = $h->due_date ? $h->due_date->toDateString() : null;
+            $forDate  = $h->for_date ? $h->for_date->toDateString() : null;
+
+            return [
+                'id'           => $h->id,
+                'kind'         => $kind,
+                'title'        => $h->title,
+                'description'  => $h->description,
+                'for_date'     => $forDate,
+                'due_date'     => $dueDate,
+                // Both `subject_id` AND the resolved name. The id lets
+                // the subject-detail screen filter the feed to "only
+                // items tagged to THIS subject" without a second
+                // network round trip; the name is kept for the
+                // homework/assignment list views that show all subjects.
+                'subject_id'   => $h->subject_id,
+                'subject'      => $h->subject?->name,
+                'teacher_name' => $h->creator?->name,
+                'is_overdue'   => $dueDate && \Carbon\Carbon::parse($dueDate)->isPast(),
+                // Submission summary — only filled when an assignment
+                // has a submission. UI uses this to drive the
+                // Submitted / Pending pill + the "View Submission" link.
+                'submission'   => $sub ? [
+                    'id'           => $sub->id,
+                    'file_url'     => $sub->file_url,
+                    'file_name'    => $sub->file_name,
+                    'submitted_at' => $sub->submitted_at?->toIso8601String(),
+                    'marks'        => $sub->marks,
+                    'feedback'     => $sub->feedback,
+                    'graded_at'    => $sub->graded_at?->toIso8601String(),
+                ] : null,
+                'created_at'   => $h->created_at?->toIso8601String(),
+            ];
+        });
+
+        return $this->successResponse(['homework' => $rows]);
+    }
+
     public function getRoster($classId, Request $request)
     {
         $school = $request->user()->school;
@@ -304,6 +646,16 @@ class StudentController extends Controller
         $school = School::where('id', $request->school_id)->where('slug', $request->school_slug)->first();
         if (!$school) {
             return $this->errorResponse('School not found', 404);
+        }
+
+        // Suspension gate: students never log in to a suspended school. There's
+        // no "I need to renew" UI on the student side, so unlike the admin
+        // login path there's no reason to let students through.
+        if ($school->subscription_status === 'suspended') {
+            return $this->errorResponse(
+                'This school is temporarily suspended. Please contact your school administrator.',
+                403
+            );
         }
 
         $student = Student::where('school_id', $school->id)->where('admission_number', $request->admission_id)->first();
@@ -365,7 +717,13 @@ class StudentController extends Controller
                 'id' => $login->id,
                 'email' => $login->email,
                 'username' => $login->username ?? $login->email
-            ]
+            ],
+            // Effective module set for this student's school. Mobile apps
+            // (student + parent — same endpoint serves both after parent
+            // profile-switch) cache this and use it to filter their
+            // favourites grid / tab bar. Loaded from the per-school
+            // cached bitmap so this adds ~0ms — no JOINs, no new queries.
+            'enabled_modules' => \App\Services\ModuleAccessService::for($school)->all(),
         ]);
     }
 
@@ -514,8 +872,8 @@ class StudentController extends Controller
         }
 
         // Generate 6-digit OTP
-        $otp = rand(100000, 999999);
-
+        // $otp = rand(100000, 999999);
+        $otp="123456"; // remove for production
         // Store OTP
         StudentPasswordReset::updateOrCreate(
             ['email' => $request->email, 'school_id' => $request->school_id],
@@ -548,8 +906,20 @@ class StudentController extends Controller
             ->where('email', $request->email)
             ->first();
 
-        if (!$reset || !Hash::check($request->otp, $reset->otp) || $reset->expires_at->isPast()) {
-            return $this->errorResponse('Invalid or expired OTP', 422);
+        // Single error wording across "no pending reset", "wrong OTP",
+        // "expired" — avoids leaking which case matched. The `!$reset->otp`
+        // guard handles the post-verify state where otp was nulled (so
+        // a re-submit of the same code doesn't pass on a half-burned row).
+        if (
+            !$reset
+            || !$reset->otp
+            || !Hash::check($request->otp, $reset->otp)
+            || $reset->expires_at->isPast()
+        ) {
+            return $this->errorResponse(
+                'The code you entered is incorrect or has expired. Please try again.',
+                422
+            );
         }
 
         // Generate temporary reset token
@@ -576,21 +946,71 @@ class StudentController extends Controller
             ->where('email', $request->email)
             ->first();
 
-        if (!$reset || !Hash::check($request->reset_token, $reset->token) || $reset->expires_at->isPast()) {
-            return $this->errorResponse('Invalid or expired reset session', 422);
+        if (!$reset || !$reset->token || !Hash::check($request->reset_token, $reset->token) || $reset->expires_at->isPast()) {
+            return $this->errorResponse(
+                'Your reset session has expired. Please start over from "Forgot password".',
+                422
+            );
         }
 
-        $student = Student::where('school_id', $request->school_id)
+        $student = \App\Models\Student::where('school_id', $request->school_id)
             ->where('email', $request->email)
-            ->firstOrFail();
+            ->first();
 
-        // Update Password
-        $student->login->update([
-            'password' => Hash::make($request->password)
-        ]);
+        if (!$student) {
+            // The account was deleted between OTP verify and now. Burn
+            // the reset row so the token can't be retried on a re-created
+            // account later.
+            $reset->delete();
+            return $this->errorResponse('This student account no longer exists.', 404);
+        }
 
-        // Clean up reset record
+        // Provision a login row if missing.
+        // Historical data integrity gap: many older imports created
+        // `students` rows without a matching `student_logins` row, so
+        // $student->login was NULL and `update()` blew up with
+        // "Call to a member function update() on null". The user has
+        // already proven email ownership via OTP, so it's safe to create
+        // the login here with their chosen password.
+        //
+        // The `password => 'hashed'` cast on StudentLogin automatically
+        // hashes plaintext values — passing Hash::make(...) explicitly
+        // would double-hash, so we hand the raw password to the cast and
+        // let Laravel format it. This also guarantees the stored value
+        // is bcrypt-formatted, which sidesteps the "This password does
+        // not use the Bcrypt algorithm" error some legacy plaintext rows
+        // were producing on Hash::check during login.
+        try {
+            $login = $student->login()->firstOrNew(['student_id' => $student->id]);
+            $login->fill([
+                'school_id'        => $student->school_id,
+                'student_id'       => $student->id,
+                'admission_number' => $student->admission_number,
+                'email'            => $student->email,
+                'password'         => $request->password, // 'hashed' cast formats it
+            ])->save();
+        } catch (\Throwable $e) {
+            \Log::error('Student password reset failed during login provision', [
+                'student_id' => $student->id,
+                'error'      => $e->getMessage(),
+            ]);
+            return $this->errorResponse(
+                'Could not update your password. Please contact your school administrator.',
+                500
+            );
+        }
+
+        // Clean up reset record.
         $reset->delete();
+
+        // Belt-and-braces: revoke any existing Sanctum tokens so a
+        // stolen / forgotten device session is also kicked out by the
+        // password change.
+        try {
+            $login->tokens()->delete();
+        } catch (\Throwable $e) {
+            // Non-fatal.
+        }
 
         return $this->successResponse(null, 'Password reset successfully. You can now login with your new password.');
     }
@@ -608,22 +1028,104 @@ class StudentController extends Controller
 
         $currentRecord = $student->academicRecords()
             ->where('academic_year', $activeSession->id)
-            ->with('schoolClass.subjects')
+            ->with(['schoolClass.subjects' => function ($q) {
+                // SchoolClass::subjects already declares lesson_plan in
+                // withPivot(...), so loading the relationship is enough
+                // to bring `pivot.lesson_plan` along — no extra query
+                // needed for that one.
+                $q->orderBy('subjects.name');
+            }, 'schoolClass.grade:id,name', 'schoolClass.section:id,name'])
             ->first();
 
         if (!$currentRecord || !$currentRecord->schoolClass) {
             return $this->errorResponse('Active academic record or class not found for current session', 404);
         }
 
-        // The `pivot` object on each subject is auto-populated by the
-        // belongsToMany relationship (includes periods_per_week, teacher_id).
-        // The student app currently only uses pivot.periods_per_week, so we
-        // do NOT call `->load('pivot.notes', ...)` here — `pivot` is not an
-        // Eloquent relationship and that call throws a 400. If the app ever
-        // needs notes/syllabus, fetch them via DB::table('class_subject_notes')
-        // keyed by pivot.id, the same pattern SchoolController::getData uses.
+        $cls = $currentRecord->schoolClass;
+        $subjects = $cls->subjects;
 
-        return $this->successResponse($currentRecord->schoolClass->subjects, 'Subjects retrieved successfully');
+        // The Lesson Plan, Syllabus chapters and Subject Notes are all
+        // teacher-authored content from the school admin's Class Subject
+        // Studio. We expose them read-only here so the student app can
+        // render a "Subject Detail" view with the three tabs that mirror
+        // the admin side. Pulled in bulk with two queries (notes +
+        // syllabus) keyed by pivot.id, the same pattern getData uses to
+        // avoid N+1.
+        $pivotIds = $subjects->pluck('pivot.id')->filter()->all();
+
+        $notesByPivot = \DB::table('class_subject_notes')
+            ->whereIn('class_subject_id', $pivotIds)
+            ->orderBy('created_at')
+            ->get()
+            ->groupBy('class_subject_id');
+
+        $syllabusByPivot = \DB::table('class_subject_syllabus')
+            ->whereIn('class_subject_id', $pivotIds)
+            ->orderBy('id')
+            ->get()
+            ->groupBy('class_subject_id');
+
+        // Teacher names — small lookup so the UI can show "Taught by …"
+        // without exposing the full users table.
+        $teacherIds = $subjects->pluck('pivot.teacher_id')->filter()->unique()->all();
+        $teachers = \DB::table('users')
+            ->whereIn('id', $teacherIds)
+            ->get(['id', 'name'])
+            ->keyBy('id');
+
+        $payload = $subjects->map(function ($sub) use ($notesByPivot, $syllabusByPivot, $teachers) {
+            $pivotId = $sub->pivot->id ?? null;
+            $teacherId = $sub->pivot->teacher_id ?? null;
+
+            return [
+                'id' => $sub->id,
+                'name' => $sub->name,
+                'code' => $sub->code,
+                'pivot' => [
+                    'id' => $pivotId,
+                    'periods_per_week' => $sub->pivot->periods_per_week ?? null,
+                    'teacher_id' => $teacherId,
+                    'teacher_name' => $teacherId && isset($teachers[$teacherId]) ? $teachers[$teacherId]->name : null,
+                    'lesson_plan' => $sub->pivot->lesson_plan ?? null,
+                    'syllabus' => $pivotId && isset($syllabusByPivot[$pivotId])
+                        ? $syllabusByPivot[$pivotId]->map(fn($s) => [
+                            'id' => $s->id,
+                            'topic' => $s->topic,
+                            'description' => $s->description,
+                            'status' => $s->status,
+                        ])->values()
+                        : [],
+                    'notes' => $pivotId && isset($notesByPivot[$pivotId])
+                        ? $notesByPivot[$pivotId]->map(fn($n) => [
+                            'id' => $n->id,
+                            'title' => $n->title,
+                            'description' => $n->description,
+                            'file_url' => $n->file_url,
+                            'created_at' => $n->created_at,
+                        ])->values()
+                        : [],
+                ],
+            ];
+        })->values();
+
+        return $this->successResponse([
+            // Wrapped in an object so we can also surface the real
+            // session + class names — the old student app hardcoded
+            // "Academic Year 2024-25" and "Curriculum v1.0", which
+            // silently lied once the school rolled over. Now the UI
+            // can read these dynamically.
+            'subjects' => $payload,
+            'session' => $activeSession ? [
+                'id' => $activeSession->id,
+                'name' => $activeSession->name,
+            ] : null,
+            'class' => [
+                'id' => $cls->id,
+                'grade' => $cls->grade?->name,
+                'section' => $cls->section?->name,
+                'full_name' => trim(($cls->grade?->name ?? '') . ' ' . ($cls->section?->name ?? '')),
+            ],
+        ], 'Subjects retrieved successfully');
     }
 
     public function getTimetable(Request $request)

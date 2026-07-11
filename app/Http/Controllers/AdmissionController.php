@@ -103,6 +103,24 @@ class AdmissionController extends Controller
             'email' => 'required|email',
             'phone' => 'nullable|string',
         ]);
+
+        // School-level gates BEFORE we even accept the application. These are
+        // public-facing so the error messages stay neutral — they don't leak
+        // plan / billing details to a random parent on the internet.
+        $school = \App\Models\School::with('plan')->find($request->school_id);
+        if ($school) {
+            if ($school->subscription_status === 'suspended') {
+                return response()->json([
+                    'message' => 'Admissions are temporarily closed. Please contact the school directly.',
+                ], 403);
+            }
+            $svc = app(\App\Services\StudentLimitService::class);
+            if (!$svc->canAddStudents($school)) {
+                return response()->json([
+                    'message' => 'Admissions for the current intake are closed. Please contact the school for next-intake details.',
+                ], 403);
+            }
+        }
         
         $url = null;
         if ($request->hasFile('photo')) {

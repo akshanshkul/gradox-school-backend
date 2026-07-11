@@ -56,6 +56,12 @@ class Kernel extends HttpKernel
      * @var array<string, class-string|string>
      */
     protected $middlewareAliases = [
+        // Per-route module-availability gate. Usage:
+        //   Route::middleware('module:attendance')->group(...)
+        // Returns 403 with error_code=MODULE_NOT_IN_PLAN if the
+        // authenticated user's school doesn't have the module enabled.
+        // See App\Http\Middleware\EnsureModuleAvailable for behavior.
+        'module' => \App\Http\Middleware\EnsureModuleAvailable::class,
         'auth' => \App\Http\Middleware\Authenticate::class,
         'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,
         'auth.session' => \Illuminate\Session\Middleware\AuthenticateSession::class,

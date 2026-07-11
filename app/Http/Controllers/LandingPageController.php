@@ -50,9 +50,17 @@ class LandingPageController extends Controller
 
     public function addSection(Request $request)
     {
+        // `type` is no longer a closed enum — the widget catalog in
+        // `frontend/src/pages/PublicLandingPage/widgets/index.tsx` keeps
+        // expanding (principal_message, manager_message, testimonials,
+        // stats, faq, programs, gallery, video, faculty, social, …) and
+        // we don't want to ship a backend migration every time. Whitelisting
+        // by a short string length cap is enough — the frontend is the
+        // source of truth for known types, anything else just renders
+        // through the legacy fallback path.
         $request->validate([
-            'title' => 'required|string',
-            'type' => 'required|in:grid,text,gallery,html,form',
+            'title' => 'required|string|max:255',
+            'type' => 'required|string|max:50',
             'content' => 'nullable|string',
         ]);
 

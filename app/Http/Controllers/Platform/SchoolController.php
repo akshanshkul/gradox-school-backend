@@ -189,4 +189,16 @@ class SchoolController extends Controller
 
         return response()->json(['school' => $school]);
     }
+
+    /**
+     * Plan + usage snapshot for a school — same shape as the school-side
+     * /school/usage so the SaaS admin SchoolDetail page can render the
+     * exact figures the school admin sees.
+     */
+    public function usage($id)
+    {
+        $school = \App\Models\School::with('plan')->findOrFail($id);
+        $svc = app(\App\Services\StudentLimitService::class);
+        return response()->json($svc->snapshot($school));
+    }
 }

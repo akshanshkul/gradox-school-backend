@@ -10,20 +10,33 @@ use App\Models\StudentExamMark;
 use App\Models\GradingScale;
 use App\Models\Student;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class MarkManagementController extends Controller
 {
+    /** School-scoped exists rule — same helper as the admin exam controllers
+     *  so a teacher can't reference another tenant's term/class/subject/etc.
+     *  Return type is the Exists rule instance, not the Rule facade. */
+    private function scoped(string $table, int $schoolId, string $col = 'school_id'): \Illuminate\Validation\Rules\Exists
+    {
+        return Rule::exists($table, 'id')->where(fn($q) => $q->where($col, $schoolId));
+    }
+
     public function getEntrySheet(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'exam_term_id' => 'required|exists:exam_terms,id',
-            'school_class_id' => 'required|exists:school_classes,id',
-            'subject_id' => 'required|exists:subjects,id',
-            'exam_type_id' => 'required|exists:exam_types,id',
+            'exam_term_id'    => ['required', $this->scoped('exam_terms', $schoolId)],
+            'school_class_id' => ['required', $this->scoped('school_classes', $schoolId)],
+            'subject_id'      => ['required', $this->scoped('subjects', $schoolId)],
+            'exam_type_id'    => ['required', $this->scoped('exam_types', $schoolId)],
         ]);
 
         $userId = $request->user()->id;
-        $class = SchoolClass::findOrFail($validated['school_class_id']);
+        // findOrFail is now defense-in-depth — the validator already
+        // rejects foreign ids, but keep the school filter on the query
+        // for safety if validation is ever loosened.
+        $class = SchoolClass::where('school_id', $schoolId)->findOrFail($validated['school_class_id']);
         
         // RBAC Check
         $isClassTeacher = ($class->class_teacher_id == $userId);
@@ -89,17 +102,23 @@ class MarkManagementController extends Controller
 
     public function submitMarks(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $request->validate([
-            'exam_structure_id' => 'required|exists:exam_structures,id',
-            'marks' => 'required|array',
-            'marks.*.student_id' => 'required|exists:students,id',
-            'marks.*.component_marks' => 'nullable|array',
-            'marks.*.grade_obtained' => 'nullable|string',
+            // exam_structures has no school_id column directly; gate via the parent term.
+            'exam_structure_id'         => ['required', Rule::exists('exam_structures', 'id')->where(function ($q) use ($schoolId) {
+                $q->whereIn('exam_term_id', \App\Models\ExamTerm::where('school_id', $schoolId)->pluck('id'));
+            })],
+            'marks'                     => 'required|array',
+            'marks.*.student_id'        => ['required', $this->scoped('students', $schoolId)],
+            'marks.*.component_marks'   => 'nullable|array',
+            'marks.*.grade_obtained'    => 'nullable|string',
             'marks.*.attendance_status' => 'required|in:present,absent,sick,exempt',
-            'marks.*.teacher_remarks' => 'nullable|string'
+            'marks.*.teacher_remarks'   => 'nullable|string'
         ]);
 
-        $structure = ExamStructure::with(['components', 'term'])->findOrFail($request->exam_structure_id);
+        $structure = ExamStructure::with(['components', 'term'])
+            ->whereHas('term', fn($q) => $q->where('school_id', $schoolId))
+            ->findOrFail($request->exam_structure_id);
         $userId = $request->user()->id;
 
         // RBAC Check
@@ -128,7 +147,10 @@ class MarkManagementController extends Controller
 
         DB::transaction(function() use ($request, $structure, $gradings, $totalMaxMarks, $scoringType) {
             foreach ($request->marks as $markData) {
-                if ($scoringType === 'grades') {
+                // DB enum is 'grade' singular — the old comparison `=== 'grades'`
+                // was dead code, so every grade-based exam silently fell through
+                // to the marks-based branch and lost the teacher's grade entry.
+                if ($scoringType === 'grade') {
                     $obtained = 0;
                     $finalGrade = $markData['grade_obtained'] ?? null;
                 } else {
@@ -162,12 +184,17 @@ class MarkManagementController extends Controller
 
     public function publishMarks(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $request->validate([
-            'exam_structure_id' => 'required|exists:exam_structures,id',
-            'is_published' => 'required|boolean'
+            'exam_structure_id' => ['required', Rule::exists('exam_structures', 'id')->where(function ($q) use ($schoolId) {
+                $q->whereIn('exam_term_id', \App\Models\ExamTerm::where('school_id', $schoolId)->pluck('id'));
+            })],
+            'is_published'      => 'required|boolean'
         ]);
 
-        $structure = ExamStructure::findOrFail($request->exam_structure_id);
+        // Defensive find: bound to this school's terms even if validation drifts.
+        $structure = ExamStructure::whereHas('term', fn($q) => $q->where('school_id', $schoolId))
+            ->findOrFail($request->exam_structure_id);
         $userId = $request->user()->id;
         $user = $request->user();
 
@@ -188,17 +215,18 @@ class MarkManagementController extends Controller
 
     public function submitScholastic(Request $request)
     {
+        $schoolId = $request->user()->school_id;
         $validated = $request->validate([
-            'school_class_id' => 'required|exists:school_classes,id',
-            'session_id' => 'required|exists:sessions,id',
-            'category' => 'required|string',
-            'grades' => 'required|array',
-            'grades.*.student_id' => 'required|exists:students,id',
-            'grades.*.grade' => 'required|string|max:10'
+            'school_class_id'     => ['required', $this->scoped('school_classes', $schoolId)],
+            'session_id'          => ['required', $this->scoped('sessions', $schoolId)],
+            'category'            => 'required|string',
+            'grades'              => 'required|array',
+            'grades.*.student_id' => ['required', $this->scoped('students', $schoolId)],
+            'grades.*.grade'      => 'required|string|max:10'
         ]);
 
         $userId = $request->user()->id;
-        $class = SchoolClass::findOrFail($validated['school_class_id']);
+        $class = SchoolClass::where('school_id', $schoolId)->findOrFail($validated['school_class_id']);
 
         $user = $request->user();
         $isPowerUser = $user->hasPermission('academic.update');

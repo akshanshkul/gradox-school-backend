@@ -49,7 +49,7 @@ class SchoolClass extends Model
     {
         return $this->belongsToMany(Subject::class, 'class_subject')
             ->using(ClassSubject::class)
-            ->withPivot('id', 'periods_per_week', 'teacher_id');
+            ->withPivot('id', 'periods_per_week', 'teacher_id', 'lesson_plan');
     }
 
     public function examStructures()
