@@ -80,6 +80,13 @@ return [
             'lock_connection' => 'default',
         ],
 
+        // Dedicated store for public landing-page data only.
+        'valkey' => [
+            'driver' => 'redis',
+            'connection' => 'valkey',
+            'lock_connection' => 'valkey',
+        ],
+
         'dynamodb' => [
             'driver' => 'dynamodb',
             'key' => env('AWS_ACCESS_KEY_ID'),

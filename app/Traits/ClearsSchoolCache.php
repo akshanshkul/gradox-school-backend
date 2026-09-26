@@ -36,6 +36,16 @@ trait ClearsSchoolCache
             // Drop every per-user GET response cached for this school
             // (bootstrap, school config, notification counts, etc.).
             SafeCache::forgetPrefix("school_{$schoolId}_url_cache");
+
+            // Public landing payload (Valkey) includes school identity and the
+            // class list — only those models need to flush it.
+            if ($model instanceof \App\Models\School) {
+                \App\Services\PublicSiteCache::forgetSchool($model);
+            } elseif ($model instanceof \App\Models\SchoolClass
+                || $model instanceof \App\Models\Grade
+                || $model instanceof \App\Models\Section) {
+                \App\Services\PublicSiteCache::forgetSchoolId($schoolId);
+            }
         }
     }
 }

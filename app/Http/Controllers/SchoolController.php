@@ -102,10 +102,16 @@ class SchoolController extends Controller
                 $request->user()->school->users()
                     ->where('status', 'active')
                     ->select(
-                        'users.id', 'users.name', 'users.profile_picture',
-                        'users.email', 'users.role_id', 'users.school_id',
-                        'users.is_teaching', 'users.staff_subtype',
-                        'users.teacher_details', 'users.permission_overrides'
+                        'users.id',
+                        'users.name',
+                        'users.profile_picture',
+                        'users.email',
+                        'users.role_id',
+                        'users.school_id',
+                        'users.is_teaching',
+                        'users.staff_subtype',
+                        'users.teacher_details',
+                        'users.permission_overrides'
                     )
                     ->with('role_relation:id,name,slug')
                     ->get()
@@ -158,8 +164,22 @@ class SchoolController extends Controller
     public function addGrade(Request $request)
     {
         $request->validate(['name' => 'required|string']);
+
+        $canonicalName = $this->getCanonicalGradeName($request->name);
+        if (!$canonicalName) {
+            return $this->errorResponse('Please enter a valid grade level (Pre-Nursery, Nursery, LKG, UKG, or 1st to 12th).', 422);
+        }
+
+        $exists = Grade::where('school_id', $request->user()->school_id)
+            ->whereRaw('LOWER(name) = ?', [strtolower($canonicalName)])
+            ->exists();
+
+        if ($exists) {
+            return $this->errorResponse("Class '{$canonicalName}' already exists.", 422);
+        }
+
         $grade = Grade::create([
-            'name' => $request->name,
+            'name' => $canonicalName,
             'school_id' => $request->user()->school_id,
         ]);
         return $this->successResponse($grade, 'Grade level created successfully');
@@ -177,8 +197,22 @@ class SchoolController extends Controller
     public function addSection(Request $request)
     {
         $request->validate(['name' => 'required|string']);
+
+        $canonicalName = $this->getCanonicalSectionName($request->name);
+        if (!$canonicalName) {
+            return $this->errorResponse('Please enter a valid section (e.g. A, B, or A1). Only single letters or letters followed by a single digit are allowed.', 422);
+        }
+
+        $exists = Section::where('school_id', $request->user()->school_id)
+            ->whereRaw('LOWER(name) = ?', [strtolower($canonicalName)])
+            ->exists();
+
+        if ($exists) {
+            return $this->errorResponse("Section '{$canonicalName}' already exists.", 422);
+        }
+
         $section = Section::create([
-            'name' => $request->name,
+            'name' => $canonicalName,
             'school_id' => $request->user()->school_id,
         ]);
         return $this->successResponse($section, 'Section created successfully');
@@ -316,9 +350,9 @@ class SchoolController extends Controller
         // 1. School Admin (isAdmin() is true)
         // 2. Class Teacher (schoolClass->class_teacher_id === user->id)
         // 3. Subject Teacher (pivot->teacher_id === user->id)
-        $isAuthorized = $user->isAdmin() 
-            || ((int)$schoolClass->class_teacher_id === (int)$user->id)
-            || ((int)$pivot->teacher_id === (int)$user->id);
+        $isAuthorized = $user->isAdmin()
+            || ((int) $schoolClass->class_teacher_id === (int) $user->id)
+            || ((int) $pivot->teacher_id === (int) $user->id);
 
         if (!$isAuthorized) {
             return $this->errorResponse('You are not authorized to edit this subject\'s notes or syllabus.', 403);
@@ -347,10 +381,12 @@ class SchoolController extends Controller
         $updateData = [];
 
         // Only admins or class teachers can change the assigned teacher or periods per week
-        $canManageAssignment = $user->isAdmin() || ((int)$schoolClass->class_teacher_id === (int)$user->id);
+        $canManageAssignment = $user->isAdmin() || ((int) $schoolClass->class_teacher_id === (int) $user->id);
         if ($canManageAssignment) {
-            if ($request->has('teacher_id')) $updateData['teacher_id'] = $request->teacher_id;
-            if ($request->has('periods_per_week')) $updateData['periods_per_week'] = $request->periods_per_week;
+            if ($request->has('teacher_id'))
+                $updateData['teacher_id'] = $request->teacher_id;
+            if ($request->has('periods_per_week'))
+                $updateData['periods_per_week'] = $request->periods_per_week;
         }
 
         // Lesson plan is editable by anyone the auth check above already
@@ -381,7 +417,7 @@ class SchoolController extends Controller
 
             $updatedNoteIds = [];
             foreach ($request->notes ?: [] as $noteData) {
-                if (!empty($noteData['id']) && in_array((int)$noteData['id'], $existingNoteIds)) {
+                if (!empty($noteData['id']) && in_array((int) $noteData['id'], $existingNoteIds)) {
                     \DB::table('class_subject_notes')
                         ->where('id', $noteData['id'])
                         ->update([
@@ -390,7 +426,7 @@ class SchoolController extends Controller
                             'description' => $noteData['description'] ?? null,
                             'updated_at' => now(),
                         ]);
-                    $updatedNoteIds[] = (int)$noteData['id'];
+                    $updatedNoteIds[] = (int) $noteData['id'];
                 } else {
                     $newId = \DB::table('class_subject_notes')->insertGetId([
                         'class_subject_id' => $pivot->id,
@@ -422,7 +458,7 @@ class SchoolController extends Controller
 
             $updatedSyllabusIds = [];
             foreach ($request->syllabus ?: [] as $syllabusData) {
-                if (!empty($syllabusData['id']) && in_array((int)$syllabusData['id'], $existingSyllabusIds)) {
+                if (!empty($syllabusData['id']) && in_array((int) $syllabusData['id'], $existingSyllabusIds)) {
                     \DB::table('class_subject_syllabus')
                         ->where('id', $syllabusData['id'])
                         ->update([
@@ -431,7 +467,7 @@ class SchoolController extends Controller
                             'status' => $syllabusData['status'],
                             'updated_at' => now(),
                         ]);
-                    $updatedSyllabusIds[] = (int)$syllabusData['id'];
+                    $updatedSyllabusIds[] = (int) $syllabusData['id'];
                 } else {
                     $newId = \DB::table('class_subject_syllabus')->insertGetId([
                         'class_subject_id' => $pivot->id,
@@ -473,7 +509,8 @@ class SchoolController extends Controller
         // Flush caches
         try {
             \App\Services\SafeCache::forgetPrefix("school_{$user->school_id}_url_cache");
-        } catch (\Throwable $e) {}
+        } catch (\Throwable $e) {
+        }
 
         return $this->successResponse($updatedPivot, 'Class subject details updated successfully');
     }
@@ -485,7 +522,7 @@ class SchoolController extends Controller
         ]);
 
         $user = $request->user();
-        
+
         // Make sure class exists in this school
         $schoolClass = SchoolClass::where('id', $classId)
             ->where('school_id', $user->school_id)
@@ -605,11 +642,11 @@ class SchoolController extends Controller
             ->get()
             ->map(function ($r) {
                 return [
-                    'class_id'          => $r->class_id,
-                    'class_label'       => trim(($r->grade_name ?? '') . ' - ' . ($r->section_name ?? ''), ' -'),
-                    'subject_id'        => $r->subject_id,
-                    'subject_name'      => $r->subject_name,
-                    'periods_per_week'  => $r->periods_per_week,
+                    'class_id' => $r->class_id,
+                    'class_label' => trim(($r->grade_name ?? '') . ' - ' . ($r->section_name ?? ''), ' -'),
+                    'subject_id' => $r->subject_id,
+                    'subject_name' => $r->subject_name,
+                    'periods_per_week' => $r->periods_per_week,
                 ];
             });
 
@@ -951,6 +988,18 @@ class SchoolController extends Controller
 
             // Always load school basic info
             $school = \App\Models\School::with($with)->findOrFail($schoolId);
+            $school->loadCount([
+                'grades',
+                'sections',
+                'classrooms',
+                'subjects',
+                'classes',
+                'users as teachers_count' => function ($query) {
+                    $query->whereHas('role_relation', function ($q) {
+                        $q->whereNotIn('slug', ['administrator', 'admin', 'super-admin']);
+                    });
+                }
+            ]);
 
             $data = [];
 
@@ -965,6 +1014,14 @@ class SchoolController extends Controller
                 'subscription_status' => $school->subscription_status,
                 'onboarding_steps' => $school->onboarding_steps,
                 'effective_grace_days' => $school->grace_days > 0 ? (int) $school->grace_days : (int) env('SUBSCRIPTION_GRACE_DAYS', 0),
+                'counts' => [
+                    'grades' => $school->grades_count,
+                    'sections' => $school->sections_count,
+                    'classrooms' => $school->classrooms_count,
+                    'subjects' => $school->subjects_count,
+                    'teachers' => $school->teachers_count,
+                    'classes' => $school->classes_count,
+                ],
             ];
 
             // Conditionally add keys to response
@@ -1023,9 +1080,9 @@ class SchoolController extends Controller
                     ->groupBy('class_subject_id');
 
                 // Map subjects to classes
-                $classSubjectsGrouped = $classSubjects->map(function($sub) use ($notes, $syllabus) {
+                $classSubjectsGrouped = $classSubjects->map(function ($sub) use ($notes, $syllabus) {
                     $subNotes = isset($notes[$sub->class_subject_id])
-                        ? $notes[$sub->class_subject_id]->map(function($n) {
+                        ? $notes[$sub->class_subject_id]->map(function ($n) {
                             return [
                                 'id' => $n->id,
                                 'class_subject_id' => $n->class_subject_id,
@@ -1039,7 +1096,7 @@ class SchoolController extends Controller
                         : [];
 
                     $subSyllabus = isset($syllabus[$sub->class_subject_id])
-                        ? $syllabus[$sub->class_subject_id]->map(function($s) {
+                        ? $syllabus[$sub->class_subject_id]->map(function ($s) {
                             return [
                                 'id' => $s->id,
                                 'class_subject_id' => $s->class_subject_id,
@@ -1134,6 +1191,7 @@ class SchoolController extends Controller
             'latitude' => 'nullable|numeric',
             'longitude' => 'nullable|numeric',
             'geofence_radius' => 'nullable|integer|min:0',
+            'landing_layout' => 'nullable|integer|in:1,2',
         ]);
 
         $logoPath = $school->logo_path;
@@ -1163,22 +1221,29 @@ class SchoolController extends Controller
         }
 
         $admissionConfig = $request->has('admission_form_config') ? json_decode($request->admission_form_config, true) : $school->admission_form_config;
+        if ($admissionConfig !== null) {
+            $admissionConfig = json_decode(json_encode(\App\Models\School::normalizeAdmissionConfig($admissionConfig)), true);
+        }
 
         $school->update([
-            'slug' => $request->slug,
-            'custom_domain' => $request->custom_domain,
-            'theme_color' => $request->theme_color,
-            'tagline' => $request->tagline,
-            'about_text' => $request->about_text,
+            // Only overwrite fields the request actually sent. Partial saves
+            // (e.g. the dashboard posting only onboarding_steps) used to null
+            // the slug, tagline, session and theme color.
+            'slug' => $request->has('slug') ? $request->slug : $school->slug,
+            'custom_domain' => $request->has('custom_domain') ? $request->custom_domain : $school->custom_domain,
+            'theme_color' => $request->has('theme_color') ? $request->theme_color : $school->theme_color,
+            'tagline' => $request->has('tagline') ? $request->tagline : $school->tagline,
+            'about_text' => $request->has('about_text') ? $request->about_text : $school->about_text,
             'logo_path' => $logoPath,
             'admission_form_config' => $admissionConfig,
             'landing_theme_config' => $themeConfig,
             'email_settings' => $emailSettings,
-            'current_session' => $request->current_session,
+            'current_session' => $request->has('current_session') ? $request->current_session : $school->current_session,
             'onboarding_steps' => $request->has('onboarding_steps') ? json_decode($request->onboarding_steps, true) : $school->onboarding_steps,
             'latitude' => $request->has('latitude') ? $request->latitude : $school->latitude,
             'longitude' => $request->has('longitude') ? $request->longitude : $school->longitude,
             'geofence_radius' => $request->has('geofence_radius') ? $request->geofence_radius : $school->geofence_radius,
+            'landing_layout' => $request->filled('landing_layout') ? (int) $request->landing_layout : ($school->landing_layout ?? 1),
         ]);
 
         try {
@@ -1292,20 +1357,40 @@ class SchoolController extends Controller
         $domain = $request->query('domain');
         $slug = $request->query('slug');
 
-        $query = \App\Models\School::query();
-
-        if ($domain) {
-            $query->where('custom_domain', $domain);
-        } elseif ($slug) {
-            $query->where('slug', $slug);
-        } else {
+        if (!$domain && !$slug) {
             return $this->errorResponse('No identifier provided', 400);
         }
 
-        $school = $query->first();
+        // Whole payload is cached in Valkey per slug/domain (landing page +
+        // login screens hit this on every visit). A hit costs zero DB queries.
+        // Invalidated on any school / class / landing-content change — see
+        // App\Services\PublicSiteCache.
+        $cacheKey = $domain
+            ? \App\Services\PublicSiteCache::key('domain', $domain)
+            : \App\Services\PublicSiteCache::key('slug', $slug);
+
+        $payload = \App\Services\PublicSiteCache::remember(
+            $cacheKey,
+            fn () => $this->buildPublicSchoolPayload($domain, $slug)
+        );
+
+        if (!$payload) {
+            return $this->errorResponse('School not found', 404);
+        }
+
+        return $this->successResponse($payload);
+    }
+
+    /** Builds the public landing payload, or null when the school doesn't exist. */
+    private function buildPublicSchoolPayload(?string $domain, ?string $slug): ?array
+    {
+        $school = \App\Models\School::query()
+            ->when($domain, fn ($q) => $q->where('custom_domain', $domain))
+            ->when(!$domain, fn ($q) => $q->where('slug', $slug))
+            ->first();
 
         if (!$school) {
-            return $this->errorResponse('School not found', 404);
+            return null;
         }
 
         // We DO NOT 403 this endpoint outright when the
@@ -1333,17 +1418,19 @@ class SchoolController extends Controller
         // Always-included identity. These fields are needed by the
         // login screens of all four apps and must NEVER be gated.
         $payload = [
-            'id'             => $school->id,
-            'name'           => $school->name,
-            'slug'           => $school->slug,
-            'logo_path'      => $school->logo_path,
-            'theme_color'    => $school->theme_color,
-            'tagline'        => $school->tagline,
+            'id' => $school->id,
+            'name' => $school->name,
+            'slug' => $school->slug,
+            'logo_path' => $school->logo_path,
+            'theme_color' => $school->theme_color,
+            'tagline' => $school->tagline,
             'contact_number' => $school->contact_number,
-            'email'          => $school->email,
+            'email' => $school->email,
             // Marketing-disabled flag — frontend branches on this.
             'landing_disabled' => !$landingEnabled,
-            'admissions_open'  => $admissionsOpen,
+            'admissions_open' => $admissionsOpen,
+            // 1 = classic landing page, 2 = multi-page school website.
+            'landing_layout' => (int) ($school->landing_layout ?? 1) === 2 ? 2 : 1,
         ];
 
         // Rich marketing payload — only included when the module is on.
@@ -1351,17 +1438,34 @@ class SchoolController extends Controller
         // module, AND keeps the marketing-vs-auth boundary explicit.
         if ($landingEnabled) {
             $payload = array_merge($payload, [
-                'about_text'             => $school->about_text,
-                'admission_form_config'  => $school->admission_form_config,
-                'landing_theme_config'   => $school->landing_theme_config,
-                'email_settings'         => $school->email_settings,
-                'banners'                => $school->landingBanners,
-                'sections'               => $school->landingSections()->where('is_active', true)->with('cards')->get(),
-                'classes'                => $school->classes()->with(['grade', 'section'])->get(),
+                'about_text' => $school->about_text,
+                'address' => $school->address,
+                'current_session' => $school->current_session,
+                'admission_form_config' => \App\Models\School::normalizeAdmissionConfig($school->admission_form_config),
+                'landing_theme_config' => $school->landing_theme_config,
+                'site_content' => $school->site_content,
+                'email_settings' => $school->email_settings,
+                'banners' => $school->landingBanners->toArray(),
+                'sections' => $school->landingSections()->where('is_active', true)->with('cards')->get()->toArray(),
+                // Flat list for the class dropdowns of BOTH layouts:
+                // [{ id, name: "Grade 1 - A" }] — one joined query.
+                'classes' => \Illuminate\Support\Facades\DB::table('school_classes as c')
+                    ->leftJoin('grades as g', 'g.id', '=', 'c.grade_id')
+                    ->leftJoin('sections as s', 's.id', '=', 'c.section_id')
+                    ->where('c.school_id', $school->id)
+                    ->orderBy('g.id')
+                    ->orderBy('s.name')
+                    ->get(['c.id', 'g.name as grade', 's.name as section'])
+                    ->map(fn ($r) => [
+                        'id' => $r->id,
+                        'name' => trim(implode(' - ', array_filter([$r->grade, $r->section], fn ($v) => $v !== null && $v !== ''))),
+                    ])
+                    ->values()
+                    ->all(),
             ]);
         }
 
-        return $this->successResponse($payload);
+        return $payload;
     }
     public function getNotificationCounts(Request $request)
     {
@@ -1431,7 +1535,7 @@ class SchoolController extends Controller
         $school = $request->user()->school;
         return $this->successResponse([
             'landing_theme_config' => $school->landing_theme_config,
-            'admission_form_config' => $school->admission_form_config,
+            'admission_form_config' => \App\Models\School::normalizeAdmissionConfig($school->admission_form_config),
             'email_settings' => $school->email_settings,
             'about_text' => $school->about_text,
             'tagline' => $school->tagline,
@@ -1442,6 +1546,7 @@ class SchoolController extends Controller
             'latitude' => $school->latitude,
             'longitude' => $school->longitude,
             'geofence_radius' => $school->geofence_radius,
+            'landing_layout' => (int) ($school->landing_layout ?? 1),
         ]);
     }
 
@@ -1527,8 +1632,8 @@ class SchoolController extends Controller
     private function formatClassWithSubjects($schoolClass)
     {
         $schoolClass->load(['grade', 'section', 'classTeacher', 'defaultClassroom', 'subjects']);
-        
-        $classSubjectIds = $schoolClass->subjects->map(function($sub) {
+
+        $classSubjectIds = $schoolClass->subjects->map(function ($sub) {
             return $sub->pivot->id;
         })->filter()->toArray();
 
@@ -1542,11 +1647,11 @@ class SchoolController extends Controller
             ->get()
             ->groupBy('class_subject_id');
 
-        $subjectsMapped = $schoolClass->subjects->map(function($sub) use ($notes, $syllabus) {
+        $subjectsMapped = $schoolClass->subjects->map(function ($sub) use ($notes, $syllabus) {
             $pivotId = $sub->pivot->id;
-            
+
             $subNotes = isset($notes[$pivotId])
-                ? $notes[$pivotId]->map(function($n) {
+                ? $notes[$pivotId]->map(function ($n) {
                     return [
                         'id' => $n->id,
                         'class_subject_id' => $n->class_subject_id,
@@ -1560,7 +1665,7 @@ class SchoolController extends Controller
                 : [];
 
             $subSyllabus = isset($syllabus[$pivotId])
-                ? $syllabus[$pivotId]->map(function($s) {
+                ? $syllabus[$pivotId]->map(function ($s) {
                     return [
                         'id' => $s->id,
                         'class_subject_id' => $s->class_subject_id,
@@ -1604,5 +1709,135 @@ class SchoolController extends Controller
             'default_classroom' => $schoolClass->defaultClassroom ? ['id' => $schoolClass->defaultClassroom->id, 'name' => $schoolClass->defaultClassroom->name] : null,
             'subjects' => $subjectsMapped
         ];
+    }
+
+    private function getCanonicalGradeName(string $input): ?string
+    {
+        $trimmed = trim($input);
+        if (empty($trimmed)) {
+            return null;
+        }
+
+        $clean = strtolower(preg_replace('/[\s\-_]+/', '', $trimmed));
+        $clean = preg_replace('/^(grade|class|level)/', '', $clean);
+
+        $directMaps = [
+            'prenursery' => 'Pre-Nursery',
+            'nursery' => 'Nursery',
+            'lkg' => 'LKG',
+            'lowerkg' => 'LKG',
+            'lowerkindergarten' => 'LKG',
+            'ukg' => 'UKG',
+            'upperkg' => 'UKG',
+            'upperkindergarten' => 'UKG',
+            'one' => '1st',
+            'two' => '2nd',
+            'three' => '3rd',
+            'four' => '4th',
+            'five' => '5th',
+            'six' => '6th',
+            'seven' => '7th',
+            'eight' => '8th',
+            'nine' => '9th',
+            'ten' => '10th',
+            'eleven' => '11th',
+            'twelve' => '12th',
+            'first' => '1st',
+            'second' => '2nd',
+            'third' => '3rd',
+            'fourth' => '4th',
+            'fifth' => '5th',
+            'sixth' => '6th',
+            'seventh' => '7th',
+            'eighth' => '8th',
+            'ninth' => '9th',
+            'tenth' => '10th',
+            'eleventh' => '11th',
+            'twelfth' => '12th',
+            '1st' => '1st',
+            '2nd' => '2nd',
+            '3rd' => '3rd',
+            '4th' => '4th',
+            '5th' => '5th',
+            '6th' => '6th',
+            '7th' => '7th',
+            '8th' => '8th',
+            '9th' => '9th',
+            '10th' => '10th',
+            '11th' => '11th',
+            '12th' => '12th'
+        ];
+
+        if (isset($directMaps[$clean])) {
+            return $directMaps[$clean];
+        }
+
+        if (ctype_digit($clean)) {
+            $numericVal = (int) $clean;
+            if ($numericVal >= 1 && $numericVal <= 12) {
+                $suffixes = [
+                    1 => '1st',
+                    2 => '2nd',
+                    3 => '3rd',
+                    4 => '4th',
+                    5 => '5th',
+                    6 => '6th',
+                    7 => '7th',
+                    8 => '8th',
+                    9 => '9th',
+                    10 => '10th',
+                    11 => '11th',
+                    12 => '12th'
+                ];
+                return $suffixes[$numericVal];
+            }
+        }
+
+        $canonicalGrades = [
+            'Pre-Nursery',
+            'Nursery',
+            'LKG',
+            'UKG',
+            '1st',
+            '2nd',
+            '3rd',
+            '4th',
+            '5th',
+            '6th',
+            '7th',
+            '8th',
+            '9th',
+            '10th',
+            '11th',
+            '12th'
+        ];
+
+        foreach ($canonicalGrades as $cg) {
+            if (strtolower(preg_replace('/[\s\-_]+/', '', $cg)) === $clean) {
+                return $cg;
+            }
+        }
+
+        return null;
+    }
+
+    private function getCanonicalSectionName(string $input): ?string
+    {
+        $trimmed = trim($input);
+        if (empty($trimmed)) {
+            return null;
+        }
+
+        $clean = strtoupper(preg_replace('/[\s\-_]+/', '', $trimmed));
+
+        if (substr($clean, 0, 7) === 'SECTION') {
+            $clean = substr($clean, 7);
+        }
+
+        if (preg_match('/^[A-Z]\d?$/', $clean)) {
+            return $clean;
+        }
+
+        return null;
     }
 }

@@ -187,16 +187,54 @@ class CircularController extends Controller
                 'nullable',
                 Rule::exists('school_classes', 'id')->where(fn($q) => $q->where('school_id', $user->school_id)),
             ],
-            'student_id' => [
-                'required_if:scope,student',
-                'nullable',
-                Rule::exists('students', 'id')->where(fn($q) => $q->where('school_id', $user->school_id)),
-            ],
+            // Accepts a student id OR admission number, like store();
+            // resolved (tenant-scoped) below.
+            'student_id' => 'required_if:scope,student|nullable',
             'published_at' => 'nullable|date',
             'expires_at' => 'nullable|date|after_or_equal:published_at',
             'image' => 'nullable|image|max:2048',
             'file' => 'nullable|mimes:pdf|max:5120',
         ]);
+
+        $studentId = $request->student_id;
+        if ($request->scope === 'student' && $studentId) {
+            $student = \App\Models\Student::where('school_id', $user->school_id)
+                ->where(function ($q) use ($studentId) {
+                    $q->where('id', $studentId)
+                      ->orWhere('admission_number', $studentId);
+                })->first();
+
+            if (!$student) {
+                return $this->errorResponse('Student not found with the provided ID or Admission Number.', 422);
+            }
+            $studentId = $student->id;
+        }
+
+        // Same audience permissions as store() — an edit must not let a
+        // teacher retarget a circular to the whole school or another class.
+        if ($request->scope === 'school' && !$user->isAdmin()) {
+            return $this->errorResponse('Only admins can create school-wide circulars.', 403);
+        }
+        if ($request->scope === 'class' && !$user->isAdmin()) {
+            $isClassTeacher = DB::table('school_classes')
+                ->where('id', $request->school_class_id)
+                ->where('class_teacher_id', $user->id)
+                ->exists();
+            if (!$isClassTeacher) {
+                return $this->errorResponse('You are not authorized to post to this class.', 403);
+            }
+        }
+        if ($request->scope === 'student' && !$user->isAdmin()) {
+            $studentInManagedClass = DB::table('students')
+                ->join('student_academic_records', 'students.id', '=', 'student_academic_records.student_id')
+                ->join('school_classes', 'student_academic_records.school_class_id', '=', 'school_classes.id')
+                ->where('students.id', $studentId)
+                ->where('school_classes.class_teacher_id', $user->id)
+                ->exists();
+            if (!$studentInManagedClass) {
+                return $this->errorResponse('You are not authorized to post to this specific student.', 403);
+            }
+        }
 
         $data = $request->only(['title', 'description', 'type', 'scope', 'expires_at']);
         
@@ -214,7 +252,7 @@ class CircularController extends Controller
             $data['school_class_id'] = $request->school_class_id;
             $data['student_id'] = null;
         } elseif ($request->scope === 'student') {
-            $data['student_id'] = $request->student_id; // Assuming ID or admission handled in store-like logic if we want consistency
+            $data['student_id'] = $studentId; // resolved id (admission number accepted)
             $data['school_class_id'] = null;
         } else {
             $data['school_class_id'] = null;

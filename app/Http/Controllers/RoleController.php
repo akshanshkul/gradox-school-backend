@@ -14,7 +14,8 @@ class RoleController extends Controller
      */
     public function index(Request $request)
     {
-        $roles = Role::where('school_id', $request->user()->school_id)->get();
+        // users_count lets the Roles page show how many people hold each role.
+        $roles = Role::where('school_id', $request->user()->school_id)->withCount('users')->get();
         return $this->successResponse($roles, 'Institutional roles retrieved');
     }
 

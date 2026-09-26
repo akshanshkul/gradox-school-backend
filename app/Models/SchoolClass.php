@@ -13,6 +13,16 @@ class SchoolClass extends Model
 {
     use HasFactory, ClearsSchoolCache;
 
+    protected static function booted()
+    {
+        static::saved(function ($schoolClass) {
+            $school = $schoolClass->school;
+            if ($school && !$school->isOnboardingStepCompleted('classes')) {
+                $school->completeOnboardingStep('classes');
+            }
+        });
+    }
+
     protected $fillable = ['school_id', 'grade_id', 'section_id', 'class_teacher_id', 'default_classroom_id', 'periods_per_day'];
 
     public function school()

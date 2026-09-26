@@ -41,14 +41,17 @@ class InquiryController extends Controller
         $request->validate([
             'school_id' => 'required|exists:schools,id',
             'name' => 'required|string|max:255',
-            'email' => 'required|email|max:255',
+            // Email is optional on the layout-2 enquiry form (phone is the
+            // primary contact there); the column is NOT NULL so store ''.
+            'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:20',
             'message' => 'required|string',
         ]);
 
-        $inquiry = Inquiry::create($request->only([
-            'school_id', 'name', 'email', 'phone', 'message'
-        ]));
+        $inquiry = Inquiry::create(array_merge(
+            $request->only(['school_id', 'name', 'phone', 'message']),
+            ['email' => (string) $request->input('email', '')]
+        ));
 
         return response()->json(['message' => 'Inquiry submitted successfully', 'data' => $inquiry], 201);
     }

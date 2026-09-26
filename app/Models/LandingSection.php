@@ -4,10 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Traits\ClearsPublicSiteCache;
 
 class LandingSection extends Model
 {
-    use HasFactory;
+    use HasFactory, ClearsPublicSiteCache;
     protected $fillable = ['school_id', 'title', 'type', 'is_active', 'sort_order', 'content', 'is_visible'];
 
     public function school()

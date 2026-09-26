@@ -100,8 +100,11 @@ class AdmissionController extends Controller
             'student_name' => 'required|string|max:255',
             'photo' => 'nullable|image|max:5120',
             'parent_name' => 'nullable|string|max:255',
-            'email' => 'required|email',
-            'phone' => 'nullable|string',
+            // Optional: schools can switch the email field off in the admin
+            // form builder (column is nullable; confirmation mail is skipped).
+            // At least one way to reach the family is still required.
+            'email' => 'nullable|email|required_without:phone',
+            'phone' => 'nullable|string|required_without:email',
         ]);
 
         // School-level gates BEFORE we even accept the application. These are

@@ -122,7 +122,8 @@ return [
 
     'redis' => [
 
-        'client' => env('REDIS_CLIENT', 'phpredis'),
+        // predis is pure PHP (no ext-redis needed on shared hosting).
+        'client' => env('REDIS_CLIENT', 'predis'),
 
         'options' => [
             'cluster' => env('REDIS_CLUSTER', 'redis'),
@@ -145,6 +146,19 @@ return [
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
             'database' => env('REDIS_CACHE_DB', '1'),
+        ],
+
+        // Valkey (Aiven, TLS) — used ONLY for the public landing-page school
+        // payload (see App\Services\PublicSiteCache). The rest of the app
+        // stays on CACHE_DRIVER. URL form: rediss://user:pass@host:port
+        'valkey' => [
+            'url' => env('VALKEY'),
+            'database' => env('VALKEY_DB', '0'),
+            'read_write_timeout' => 5,
+            'timeout' => 3,
+            // Reuse the TLS connection across requests under php-fpm —
+            // the handshake is the slowest part of a cache hit.
+            'persistent' => env('VALKEY_PERSISTENT', true),
         ],
 
     ],

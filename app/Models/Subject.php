@@ -11,6 +11,16 @@ class Subject extends Model
 {
     use HasFactory, ClearsSchoolCache;
 
+    protected static function booted()
+    {
+        static::saved(function ($subject) {
+            $school = $subject->school;
+            if ($school && !$school->isOnboardingStepCompleted('subjects')) {
+                $school->completeOnboardingStep('subjects');
+            }
+        });
+    }
+
     protected $fillable = ['school_id', 'name', 'code'];
 
     public function school()

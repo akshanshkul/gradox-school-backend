@@ -11,6 +11,16 @@ class Classroom extends Model
 {
     use HasFactory, ClearsSchoolCache;
 
+    protected static function booted()
+    {
+        static::saved(function ($classroom) {
+            $school = $classroom->school;
+            if ($school && !$school->isOnboardingStepCompleted('classrooms')) {
+                $school->completeOnboardingStep('classrooms');
+            }
+        });
+    }
+
     protected $fillable = ['school_id', 'name', 'capacity', 'type'];
 
     public function timetableEntries()

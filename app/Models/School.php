@@ -30,6 +30,8 @@ class School extends Model
         'about_text',
         'admission_form_config',
         'landing_theme_config',
+        'site_content',
+        'landing_layout',
         'email_settings',
         'plan_name',
         'plan_id',
@@ -53,6 +55,8 @@ class School extends Model
     protected $casts = [
         'admission_form_config' => 'array',
         'landing_theme_config' => 'array',
+        'site_content' => 'array',
+        'landing_layout' => 'integer',
         'email_settings' => 'array',
         'onboarding_steps' => 'array',
         'working_days' => 'array',
@@ -156,6 +160,100 @@ class School extends Model
                 }
             }
         });
+
+        static::created(function (School $school) {
+            $roles = [
+                [
+                    'slug' => 'administrator',
+                    'name' => 'Administrator',
+                    'description' => 'Full administrative access to all institutional modules.',
+                    'permissions' => self::getDefaultAdminPermissions(),
+                ],
+                [
+                    'slug' => 'teacher',
+                    'name' => 'Teacher',
+                    'description' => 'Standard teaching faculty access (restricted administrative view).',
+                    'permissions' => [
+                        'profile' => ['read' => true, 'update' => true],
+                        'attendance' => ['read' => true, 'create' => true],
+                    ],
+                ],
+                [
+                    'slug' => 'incharge',
+                    'name' => 'Incharge',
+                    'description' => 'Department coordinator / academic level supervisor.',
+                    'permissions' => [
+                        'profile' => ['read' => true, 'update' => true],
+                        'academic' => ['read' => true, 'update' => true],
+                        'students' => ['read' => true, 'update' => true],
+                        'timetable' => ['read' => true, 'create' => true, 'update' => true],
+                        'attendance' => ['read' => true, 'create' => true, 'update' => true],
+                    ],
+                ],
+                [
+                    'slug' => 'staff',
+                    'name' => 'Staff',
+                    'description' => 'Standard non-teaching staff / office personnel access.',
+                    'permissions' => [
+                        'profile' => ['read' => true, 'update' => true],
+                        'students' => ['read' => true],
+                    ],
+                ],
+            ];
+
+            foreach ($roles as $r) {
+                \App\Models\Role::firstOrCreate(
+                    ['school_id' => $school->id, 'slug' => $r['slug']],
+                    [
+                        'name' => $r['name'],
+                        'description' => $r['description'],
+                        'permissions' => $r['permissions'],
+                    ]
+                );
+            }
+        });
+
+        static::saved(function (School $school) {
+            if ($school->wasChanged('name') || $school->wasChanged('logo_path')) {
+                if (!$school->isOnboardingStepCompleted('basic-info')) {
+                    if (!empty($school->name) && !empty($school->logo_path)) {
+                        $school->completeOnboardingStep('basic-info');
+                    }
+                }
+            }
+        });
+    }
+
+    private static function getDefaultAdminPermissions(): array
+    {
+        $resources = ['academic', 'students', 'timetable', 'staff', 'system', 'blogs', 'courses', 'reports', 'attendance'];
+        $actions = ['read', 'create', 'update', 'delete', 'export', 'import', 'publish', 'approve', 'archive', 'reject', 'restore'];
+        
+        $perms = [];
+        foreach ($resources as $res) {
+            foreach ($actions as $act) {
+                $perms[$res][$act] = true;
+            }
+        }
+        return $perms;
+    }
+
+    public function completeOnboardingStep(string $step): void
+    {
+        $steps = $this->onboarding_steps ?? [];
+        if (!in_array($step, $steps, true)) {
+            $steps[] = $step;
+            $this->onboarding_steps = $steps;
+            self::withoutEvents(function () {
+                $this->save();
+            });
+        }
+    }
+
+    public function isOnboardingStepCompleted(string $step): bool
+    {
+        $steps = $this->onboarding_steps ?? [];
+        return in_array($step, $steps, true);
     }
 
     public function students()
@@ -317,5 +415,77 @@ class School extends Model
             return $a . '-' . $b;
         }
         return strtolower(preg_replace('/\s+/', '', $name));
+    }
+
+    /**
+     * Admission / enquiry form config in ONE canonical shape for every
+     * consumer (layout 1, layout 2, admin editor):
+     *
+     *   fields: { <key>: { active, required, label, type, placeholder } }
+     *
+     * Older schools stored `fields` as a list — [{id, type, label,
+     * placeholder, required}] — which the object-based UIs silently broke
+     * on. Student name and class are always part of the form, so those ids
+     * are dropped from the optional-field map.
+     */
+    public static function normalizeAdmissionConfig($config): array
+    {
+        $config = is_array($config) ? $config : [];
+        $raw = $config['fields'] ?? [];
+        $fields = [];
+
+        if (is_array($raw) && array_is_list($raw)) {
+            foreach ($raw as $f) {
+                $key = is_array($f) ? ($f['id'] ?? $f['key'] ?? null) : null;
+                if (!$key || in_array($key, ['name', 'student_name', 'class', 'school_class_id'], true)) {
+                    continue;
+                }
+                $fields[$key] = [
+                    'active' => true,
+                    'required' => (bool) ($f['required'] ?? false),
+                    'label' => $f['label'] ?? ucwords(str_replace('_', ' ', $key)),
+                    'type' => $f['type'] ?? null,
+                    'placeholder' => $f['placeholder'] ?? null,
+                ];
+            }
+        } elseif (is_array($raw)) {
+            foreach ($raw as $key => $f) {
+                if (!is_array($f)) {
+                    continue;
+                }
+                $fields[$key] = array_merge($f, [
+                    'active' => (bool) ($f['active'] ?? true),
+                    'required' => (bool) ($f['required'] ?? false),
+                    'label' => $f['label'] ?? ucwords(str_replace('_', ' ', (string) $key)),
+                ]);
+            }
+        }
+
+        // Oldest format: boolean require_* flags. Fold them into fields.
+        $legacy = [
+            'require_parent_name' => ['parent_name', 'Parent / Guardian Name'],
+            'require_email' => ['email', 'Email Address'],
+            'require_phone' => ['phone', 'Phone Number'],
+            'require_previous_school' => ['previous_school', 'Previous School Attended'],
+            'require_address' => ['residential_address', 'Residential Address'],
+            'require_occupation' => ['parent_occupation', 'Parent Occupation'],
+            'require_photo' => ['student_photo', 'Student Passport Photo'],
+        ];
+        foreach ($legacy as $flag => [$key, $label]) {
+            if (array_key_exists($flag, $config)) {
+                if (!isset($fields[$key]) && $config[$flag]) {
+                    $fields[$key] = ['active' => true, 'required' => true, 'label' => $label];
+                }
+                unset($config[$flag]);
+            }
+        }
+
+        return array_merge([
+            'enable_admission' => true,
+            'enable_inquiry' => true,
+            'form_position' => 'hero',
+            'form_heading' => 'Apply for Admission',
+            'button_text' => 'Submit Official Application',
+        ], $config, ['fields' => (object) $fields]);
     }
 }

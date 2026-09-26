@@ -4,10 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Traits\ClearsPublicSiteCache;
 
 class LandingSectionCard extends Model
 {
-    use HasFactory;
+    use HasFactory, ClearsPublicSiteCache;
     protected $fillable = ['landing_section_id', 'image_path', 'title', 'description', 'sort_order'];
 
     public function section()

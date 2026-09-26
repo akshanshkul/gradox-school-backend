@@ -36,7 +36,11 @@ Route::get('/health', fn () => response()->json([
 // what we want before login. A focused per-email RateLimiter would be
 // tighter — see RouteServiceProvider::configureRateLimiting if you want to
 // add one — but 5/min/IP already kills any practical password-spray.
-Route::middleware('throttle:5,1')->post('/login', [AuthController::class, 'login']);
+Route::middleware('throttle:5,1')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/login/send-otp', [AuthController::class, 'sendOtp']);
+    Route::post('/login/verify-otp', [AuthController::class, 'verifyOtp']);
+});
 
 Route::middleware('auth:platform_admin')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);

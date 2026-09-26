@@ -33,8 +33,10 @@ use App\Http\Controllers\TeacherAttendanceController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\Teacher\HomeworkController as TeacherHomeworkController;
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+// Per-IP limits on unauthenticated endpoints (the global `api` limiter is
+// 300/min — far too loose for logins, OTPs and public forms).
+Route::middleware('throttle:5,1')->post('/register', [AuthController::class, 'register']);
+Route::middleware('throttle:10,1')->post('/login', [AuthController::class, 'login']);
 
 // Self-serve password reset for staff (teachers, admins, incharges).
 // Same three-step OTP flow the student app uses, but operates on the
@@ -48,14 +50,19 @@ Route::middleware('throttle:10,1')->group(function () {
 });
 
 // Public Landing Pages & Inquiries
-Route::get('/school/public', [SchoolController::class, 'getPublicSchoolInfo']);
-Route::get('/schools/search', [SchoolController::class, 'searchSchools']);
-Route::get('/school/check-slug-availability', [SchoolController::class, 'checkPublicSlugAvailability']);
-Route::get('/school/public/cms', [LandingPageController::class, 'getCMSData']);
+// Max 30 requests per minute per client IP (returns 429 after that).
+Route::middleware('throttle:30,1')->get('/school/public', [SchoolController::class, 'getPublicSchoolInfo']);
+Route::middleware('throttle:60,1')->group(function () {
+    Route::get('/schools/search', [SchoolController::class, 'searchSchools']);
+    Route::get('/school/check-slug-availability', [SchoolController::class, 'checkPublicSlugAvailability']);
+    Route::get('/school/public/cms', [LandingPageController::class, 'getCMSData']);
+});
 
-Route::post('/inquiries', [InquiryController::class, 'store']);
-Route::post('/demo-request', [InquiryController::class, 'storeDemoRequest']);
-Route::post('/admissions', [AdmissionController::class, 'store']);
+// Public forms: enquiry / admission (S3 photo upload) / demo request
+// (emails the sales team) — stop spam floods.
+Route::middleware('throttle:10,1')->post('/inquiries', [InquiryController::class, 'store']);
+Route::middleware('throttle:5,1')->post('/demo-request', [InquiryController::class, 'storeDemoRequest']);
+Route::middleware('throttle:10,1')->post('/admissions', [AdmissionController::class, 'store']);
 
 // Impersonation handoff exchange — PUBLIC (no auth) but single-use and
 // short-lived. The school frontend POSTs the handoff code it received via
@@ -240,6 +247,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // catches that and hides the nav item / blocks the route.
         Route::middleware('module:landing_page_widgets')->group(function () {
             Route::get('/school/cms', [LandingPageController::class, 'getCMSData']);
+
+            // Structured website content (Layout 2 multi-page site).
+            Route::get('/school/site-content', [\App\Http\Controllers\SiteContentController::class, 'show']);
+            Route::put('/school/site-content', [\App\Http\Controllers\SiteContentController::class, 'update']);
+            Route::post('/school/site-content/upload', [\App\Http\Controllers\SiteContentController::class, 'upload']);
+            Route::get('/school/site-content/staff', [\App\Http\Controllers\SiteContentController::class, 'staff']);
             Route::post('/school/cms/banners', [LandingPageController::class, 'addBanner']);
             Route::delete('/school/cms/banners/{id}', [LandingPageController::class, 'deleteBanner']);
 
@@ -320,15 +333,17 @@ Route::get('/health', function () {
 });
 
 //  setup auth for student application routes 
-Route::post('/students/login', [StudentController::class, 'studentLogin']);
-Route::post('/students/forgot-password', [StudentController::class, 'requestPasswordReset']);
-Route::post('/students/verify-otp', [StudentController::class, 'verifyOtp']);
-Route::post('/students/reset-password', [StudentController::class, 'resetPassword']);
+// Logins / OTP verification: slow down password & 6-digit OTP guessing.
+// OTP sending: each call sends a real email/SMS.
+Route::middleware('throttle:10,1')->post('/students/login', [StudentController::class, 'studentLogin']);
+Route::middleware('throttle:5,1')->post('/students/forgot-password', [StudentController::class, 'requestPasswordReset']);
+Route::middleware('throttle:10,1')->post('/students/verify-otp', [StudentController::class, 'verifyOtp']);
+Route::middleware('throttle:10,1')->post('/students/reset-password', [StudentController::class, 'resetPassword']);
 
 // Parent Application Routes
-Route::post('/parents/send-otp', [ParentAuthController::class, 'sendOtp']);
-Route::post('/parents/verify-otp', [ParentAuthController::class, 'verifyOtp']);
-Route::post('/parents/login-as-student', [ParentAuthController::class, 'loginAsStudent']);
+Route::middleware('throttle:5,1')->post('/parents/send-otp', [ParentAuthController::class, 'sendOtp']);
+Route::middleware('throttle:10,1')->post('/parents/verify-otp', [ParentAuthController::class, 'verifyOtp']);
+Route::middleware('throttle:10,1')->post('/parents/login-as-student', [ParentAuthController::class, 'loginAsStudent']);
 Route::get('/parents/students', [ParentAuthController::class, 'getStudents']);
 
 Route::middleware('auth:sanctum')->group(function () {

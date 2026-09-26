@@ -18,7 +18,7 @@ class DefaultRolesSeeder extends Seeder
 
         foreach ($schools as $school) {
             // 1. Admin Role
-            $adminRole = Role::updateOrCreate(
+            Role::updateOrCreate(
                 ['school_id' => $school->id, 'slug' => 'administrator'],
                 [
                     'name' => 'Administrator',
@@ -27,8 +27,8 @@ class DefaultRolesSeeder extends Seeder
                 ]
             );
 
-            // 2. Teacher Role (Restricted by default)
-            $teacherRole = Role::updateOrCreate(
+            // 2. Teacher Role
+            Role::updateOrCreate(
                 ['school_id' => $school->id, 'slug' => 'teacher'],
                 [
                     'name' => 'Teacher',
@@ -40,6 +40,34 @@ class DefaultRolesSeeder extends Seeder
                 ]
             );
 
+            // 3. Incharge Role
+            Role::updateOrCreate(
+                ['school_id' => $school->id, 'slug' => 'incharge'],
+                [
+                    'name' => 'Incharge',
+                    'description' => 'Department coordinator / academic level supervisor.',
+                    'permissions' => [
+                        'profile' => ['read' => true, 'update' => true],
+                        'academic' => ['read' => true, 'update' => true],
+                        'students' => ['read' => true, 'update' => true],
+                        'timetable' => ['read' => true, 'create' => true, 'update' => true],
+                        'attendance' => ['read' => true, 'create' => true, 'update' => true],
+                    ]
+                ]
+            );
+
+            // 4. Staff Role
+            Role::updateOrCreate(
+                ['school_id' => $school->id, 'slug' => 'staff'],
+                [
+                    'name' => 'Staff',
+                    'description' => 'Standard non-teaching staff / office personnel access.',
+                    'permissions' => [
+                        'profile' => ['read' => true, 'update' => true],
+                        'students' => ['read' => true],
+                    ]
+                ]
+            );
         }
     }
 

@@ -14,6 +14,18 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, ClearsSchoolCache;
 
+    protected static function booted()
+    {
+        static::saved(function ($user) {
+            $school = $user->school;
+            if ($school && !$school->isOnboardingStepCompleted('faculty')) {
+                if ($user->role_relation && !in_array($user->role_relation->slug, ['administrator', 'admin', 'super-admin'], true)) {
+                    $school->completeOnboardingStep('faculty');
+                }
+            }
+        });
+    }
+
     /**
      * The attributes that are mass assignable.
      *
